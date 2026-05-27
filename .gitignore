@@ -362,14 +362,25 @@ MigrationBackup/
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
 
-# Игнорировать реальные данные таможни
-articles.txt
-codes/
-result.xlsx
-
-# Игнорировать кэш Python
+# Сборка и исполняемые файлы
+dist/
+build/
+output/
+*.spec
+*.exe
+*.sln
+# Системное и кэш Python
 __pycache__/
-/output/main.exe
-/output/декларации.exe
-/декларации.sln
-/декларации/декларации.pyproj
+*.pyc
+
+# Конфиги и результаты
+result.xlsx
+customs_config.json
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+/декларации/отчет по кодам.xlsx
+/декларации/articles.txt
+/декларации/codes

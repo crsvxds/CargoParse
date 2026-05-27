@@ -3,11 +3,7 @@ import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Alignment
 
-def process_customs_data(art_file, c_folder, out_file, log_callback, progress_callback, stats_callback):
-    """
-    Выполняет всю логику верификации.
-    Вместо прямой работы с GUI использует колбэки (функции обратного вызова).
-    """
+def process_customs_data(art_file, c_folder, log_callback, progress_callback, stats_callback):
     wb = Workbook()
     ws = wb.active
     ws.title = "Результат"
@@ -95,23 +91,16 @@ def process_customs_data(art_file, c_folder, out_file, log_callback, progress_ca
                 code_source_map = {}  
                 
                 for value in codes_df[0].tolist():
-                    if pd.isna(value):
-                        continue
+                    if pd.isna(value): continue
                     cleaned_code = str(value).strip()
                     if cleaned_code:
                         if cleaned_code in code_source_map:
                             dup_count_for_article += 1
                             total_dups_counter += 1
                             stats_callback("dups", total_dups_counter)
-                            log_callback(
-                                f"   [ДУБЛЬ ИГНОРИРОВАН] Артикул {article}:\n"
-                                f"     • Код: {cleaned_code}\n"
-                                f"     • Файл с повторением: {file_name_short}"
-                            )
                         else:
                             code_source_map[cleaned_code] = file_name_short
                             all_product_codes.append(cleaned_code)
-                            
             except Exception as e:
                 log_callback(f"[ОШИБКА ЧТЕНИЯ] файла {os.path.basename(file_path)}")
 
@@ -130,25 +119,19 @@ def process_customs_data(art_file, c_folder, out_file, log_callback, progress_ca
                 "article": article, "expected": quantity_int, "actual": total_codes_count,
                 "diff": diff, "status": status_text, "files": files_list_str
             })
-            log_callback(f"Артикул {article}: РАСХОЖДЕНИЕ (Ожидалось {quantity_int}, собрано {total_codes_count})")
+            log_callback(f"Артикул {article}: РАСХОЖДЕНИЕ")
             bad_counter += 1
             stats_callback("bad", bad_counter)
         else:
-            log_callback(f"Артикул {article}: OK (Совпало {total_codes_count} шт.)")
+            log_callback(f"Артикул {article}: OK")
             ok_counter += 1
             stats_callback("ok", ok_counter)
 
-        if total_codes_count == 0:
-            ws[f"A{current_row}"] = "НЕТУ"
-            current_row += 2
-            progress_callback(index + 1, total_lines)
-            continue
-
-        for code in all_product_codes:
-            ws[f"A{current_row}"] = code
-            current_row += 1
+        if total_codes_count > 0:
+            for code in all_product_codes:
+                ws[f"A{current_row}"] = code
+                current_row += 1
         current_row += 1
-        
         progress_callback(index + 1, total_lines)
 
     for col in ws.columns:
@@ -158,39 +141,5 @@ def process_customs_data(art_file, c_folder, out_file, log_callback, progress_ca
             cell.alignment = Alignment(vertical="top")
         ws.column_dimensions[column].width = min(max_length + 5, 60)
 
-    wb.save(out_file)
-
-    # Вывод финального отчета
-    log_callback("\n============================================================")
-    log_callback("ФИНАЛЬНЫЙ ОТЧЕТ ПО ОШИБКАМ И РАСХОЖДЕНИЯМ:")
-    log_callback("============================================================\n")
-
-    if not_found_articles:
-        log_callback(f"[!] НЕ НАЙДЕНЫ ФАЙЛЫ ДЛЯ АРТИКУЛОВ ({len(not_found_articles)} шт.):")
-        for art in not_found_articles:
-            log_callback(f"    - Артикул {art}: файлы отсутствуют в папке.")
-        log_callback("")
-    else:
-        log_callback("[✓] Для каждого артикула из списка найден хотя бы один файл.\n")
-
-    if duplicate_summary:
-        log_callback(f"[!] ОБНАРУЖЕНЫ СОВПАДЕНИЯ (ДУБЛИКАТЫ) КОДОВ МАРКИРОВКИ:")
-        for art, count in duplicate_summary.items():
-            log_callback(f"    - Артикул {art}: отфильтровано {count} шт. повторяющихся кодов внутри файлов.")
-        log_callback("    *Повторяющиеся коды были полностью исключены из итогового Excel.*\n")
-    else:
-        log_callback("[✓] Дубликатов кодов внутри файлов не обнаружено.\n")
-
-    if mismatched_articles:
-        log_callback(f"[!] РАСХОЖДЕНИЕ ОБЩЕЙ СУММЫ КОДОВ ВНУТРИ ФАЙЛОВ ({len(mismatched_articles)} шт.):")
-        for item in mismatched_articles:
-            log_callback(
-                f"    - Артикул {item['article']}: "
-                f"В текстовике указано {item['expected']}, "
-                f"суммарно в файлах [{item['files']}] найдено (чистых) {item['actual']}. "
-                f"Итог: {item['status']} на {item['diff']} шт."
-            )
-    else:
-        log_callback("[✓] Расхождений по количеству кодов во внутрянке не обнаружено.")
-    
-    log_callback("\n============================================================")
+    # Вместо сохранения возвращаем объект книги
+    return wb
