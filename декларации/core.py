@@ -3,7 +3,10 @@ import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Alignment
 
-def process_customs_data(art_file, c_folder, log_callback, progress_callback, stats_callback):
+def process_customs_data(art_file, c_folder, out_file, log_callback, progress_callback, stats_callback):
+    """
+    Оригинальная логика обработки с автосохранением.
+    """
     wb = Workbook()
     ws = wb.active
     ws.title = "Результат"
@@ -42,7 +45,7 @@ def process_customs_data(art_file, c_folder, log_callback, progress_callback, st
         try:
             quantity_int = int(quantity)
         except ValueError:
-            log_callback(f"[ОШИБКА] Неверное число количества у {article}")
+            log_callback(f"[ОШИБКА] Неверное число у {article}")
             bad_counter += 1
             stats_callback("bad", bad_counter)
             progress_callback(index + 1, total_lines)
@@ -71,7 +74,7 @@ def process_customs_data(art_file, c_folder, log_callback, progress_callback, st
         if not matched_files:
             ws[f"A{current_row}"] = "НЕТУ"
             not_found_articles.append(article)
-            log_callback(f"Артикул {article}: Файлы декларации НЕ найдены")
+            log_callback(f"Артикул {article}: Файлы НЕ найдены")
             bad_counter += 1
             stats_callback("bad", bad_counter)
             current_row += 2
@@ -87,9 +90,7 @@ def process_customs_data(art_file, c_folder, log_callback, progress_callback, st
                 codes_df = pd.read_excel(file_path, header=None)
                 file_name_short = os.path.basename(file_path)
                 files_loaded_names.append(file_name_short)
-                
-                code_source_map = {}  
-                
+                code_source_map = {}
                 for value in codes_df[0].tolist():
                     if pd.isna(value): continue
                     cleaned_code = str(value).strip()
@@ -108,17 +109,11 @@ def process_customs_data(art_file, c_folder, log_callback, progress_callback, st
             duplicate_summary[article] = dup_count_for_article
 
         total_codes_count = len(all_product_codes)
-        files_list_str = ", ".join(files_loaded_names)
-
+        
         if total_codes_count != quantity_int:
             diff = abs(quantity_int - total_codes_count)
             status_text = "меньше" if total_codes_count < quantity_int else "больше"
-            ws[f"F{header_row + 1}"] = f"В файлах суммарно (без дублей): {total_codes_count}, {status_text.capitalize()} на {diff}"
-            
-            mismatched_articles.append({
-                "article": article, "expected": quantity_int, "actual": total_codes_count,
-                "diff": diff, "status": status_text, "files": files_list_str
-            })
+            ws[f"F{header_row + 1}"] = f"В файлах: {total_codes_count}, {status_text} на {diff}"
             log_callback(f"Артикул {article}: РАСХОЖДЕНИЕ")
             bad_counter += 1
             stats_callback("bad", bad_counter)
@@ -127,10 +122,9 @@ def process_customs_data(art_file, c_folder, log_callback, progress_callback, st
             ok_counter += 1
             stats_callback("ok", ok_counter)
 
-        if total_codes_count > 0:
-            for code in all_product_codes:
-                ws[f"A{current_row}"] = code
-                current_row += 1
+        for code in all_product_codes:
+            ws[f"A{current_row}"] = code
+            current_row += 1
         current_row += 1
         progress_callback(index + 1, total_lines)
 
@@ -141,5 +135,5 @@ def process_customs_data(art_file, c_folder, log_callback, progress_callback, st
             cell.alignment = Alignment(vertical="top")
         ws.column_dimensions[column].width = min(max_length + 5, 60)
 
-    # Вместо сохранения возвращаем объект книги
-    return wb
+    wb.save(out_file)
+    log_callback(f"\n[УСПЕХ] Отчет сохранен: {out_file}")
