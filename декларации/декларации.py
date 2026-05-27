@@ -1,8 +1,9 @@
 ﻿import os
 import sys
+import random
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-import threading  # Импортируем потоки
+import threading
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Alignment
@@ -13,13 +14,30 @@ class CustomsApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Customs Data Consolidator (ВЭД Китай)")
-        self.root.geometry("750x550")
-        self.root.minsize(650, 450)
+        self.root.geometry("750x640")
+        self.root.minsize(700, 570)
 
-        # Переменные путей
+        # Список шуточных фраз для статуса загрузки
+        self.funny_statuses = [
+            "Разгружаем контейнер из Гуанчжоу...",
+            "Проверяем таможенную декларацию...",
+            "Подкупаем инспектора шоколадкой...",
+            "Завариваем крепкий кофе...",
+            "Пересчитываем коробки вручную...",
+            "Ищем потерявшийся артикул под столом...",
+            "Ждем, пока китайская сторона подпишет доки...",
+            "Сортируем маркировку левой пяткой...",
+            "Проходим досмотр без регистрации и СМС...",
+            "Запускаем дроны над складом..."
+        ]
+
+        # Переменные путей (вернули дефолтные значения, как было)
         self.articles_path = tk.StringVar(value="articles.txt")
         self.codes_dir = tk.StringVar(value="codes")
         self.output_path = tk.StringVar(value="result.xlsx")
+        
+        # Чекбокс для автооткрытия файла
+        self.auto_open = tk.BooleanVar(value=True)
 
         self.create_widgets()
 
@@ -43,23 +61,41 @@ class CustomsApp:
         ttk.Entry(file_frame, textvariable=self.output_path, width=55).grid(row=2, column=1, padx=5, pady=5)
         ttk.Button(file_frame, text="Обзор...", command=self.browse_output).grid(row=2, column=2, pady=5)
 
-        # --- БЛОК ЛОГОВ ---
+        # --- БЛОК ЛОГОВ И ПРОГРЕССА ---
         log_frame = ttk.LabelFrame(main_frame, text=" Лог выполнения ", padding="5")
         log_frame.pack(fill=tk.BOTH, expand=True, pady=5)
 
-        self.log_text = tk.Text(log_frame, height=14, width=85, state=tk.DISABLED)
+        self.log_text = tk.Text(log_frame, height=12, width=85, state=tk.DISABLED)
         scrollbar = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=scrollbar.set)
 
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # --- КНОПКИ УПРАВЛЕНИЯ ---
+        # Индикатор прогресса и статусная строка
+        progress_frame = ttk.Frame(main_frame, padding="5")
+        progress_frame.pack(fill=tk.X, pady=5)
+        
+        self.progress_bar = ttk.Progressbar(progress_frame, orient=tk.HORIZONTAL, mode='determinate')
+        self.progress_bar.pack(fill=tk.X, pady=(0, 5))
+        
+        status_sub_frame = ttk.Frame(progress_frame)
+        status_sub_frame.pack(fill=tk.X)
+        
+        self.status_label = ttk.Label(status_sub_frame, text="Готов к работе", font=("Segoe UI", 9, "italic"))
+        self.status_label.pack(side=tk.LEFT)
+        
+        self.progress_label = ttk.Label(status_sub_frame, text="0%", width=6, anchor=tk.E)
+        self.progress_label.pack(side=tk.RIGHT)
+
+        # --- КНОПКИ УПРАВЛЕНИЯ И ЧЕКБОКСЫ ---
         btn_frame = ttk.Frame(main_frame)
         btn_frame.pack(fill=tk.X, pady=10)
 
         self.run_btn = ttk.Button(btn_frame, text="СТАРТ ОБРАБОТКИ", command=self.start_processing_thread)
         self.run_btn.pack(side=tk.LEFT, padx=5, ipadx=10, ipady=5)
+
+        ttk.Checkbutton(btn_frame, text="Открыть Excel после завершения", variable=self.auto_open).pack(side=tk.LEFT, padx=15)
 
         self.save_log_btn = ttk.Button(btn_frame, text="Сохранить лог в .txt", command=self.save_log_to_file)
         self.save_log_btn.pack(side=tk.RIGHT, padx=5, ipadx=5, ipady=5)
@@ -75,6 +111,21 @@ class CustomsApp:
     def browse_output(self):
         file = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel Files", "*.xlsx")])
         if file: self.output_path.set(file)
+
+    def update_status_phrases_loop(self):
+        if getattr(self, 'is_running', False):
+            random_phrase = random.choice(self.funny_statuses)
+            self.status_label.configure(text=random_phrase)
+            self.root.after(2000, self.update_status_phrases_loop)
+
+    def update_progress(self, current, total):
+        if total == 0:
+            percent = 0
+        else:
+            percent = int((current / total) * 100)
+        self.progress_bar['value'] = percent
+        self.progress_label.configure(text=f"{percent}%")
+        self.root.update_idletasks()
 
     def log(self, message):
         self.log_text.configure(state=tk.NORMAL)
@@ -107,30 +158,42 @@ class CustomsApp:
             except Exception as e:
                 messagebox.showerror("Ошибка", f"Не удалось сохранить файл:\n{e}")
 
-    # Новый метод-посредник, который запускает тяжелую обработку в фоновом потоке
     def start_processing_thread(self):
+        self.is_running = True
+        self.run_btn.configure(state=tk.DISABLED)
+        
+        self.update_status_phrases_loop()
+        
         processing_thread = threading.Thread(target=self.start_processing)
-        processing_thread.daemon = True  # Чтобы поток закрывался, если закрыть главное окно
+        processing_thread.daemon = True
         processing_thread.start()
 
     def start_processing(self):
         self.clear_log()
+        self.update_progress(0, 100)
 
-        art_file = self.articles_path.get()
-        c_folder = self.codes_dir.get()
-        out_file = self.output_path.get()
+        art_file = self.articles_path.get().strip()
+        c_folder = self.codes_dir.get().strip()
+        out_file = self.output_path.get().strip()
 
         errors = []
-        if not os.path.exists(art_file): errors.append(f"Не найден файл артикулов: '{art_file}'")
-        if not os.path.exists(c_folder): errors.append(f"Не найдена папка с кодами: '{c_folder}'")
+        if not art_file: errors.append("Не указан путь к файлу артикулов.")
+        elif not os.path.exists(art_file): errors.append(f"Не найден файл артикулов: '{art_file}'")
+        
+        if not c_folder: errors.append("Не указан путь к папке с кодами.")
+        elif not os.path.exists(c_folder): errors.append(f"Не найдена папка с кодами: '{c_folder}'")
+        
+        if not out_file: errors.append("Не указан путь для сохранения результата.")
 
         if errors:
             error_msg = "\n".join(errors)
             messagebox.showerror("Критическая ошибка", error_msg)
-            self.log("[ОШИБКА ЗАПУСКА] Проверьте пути к файлам и папкам.")
+            self.log("[ОШИБКА ЗАПУСКА] Проверьте правильность заполнения путей.")
+            self.is_running = False
+            self.status_label.configure(text="Ошибка запуска")
+            self.run_btn.configure(state=tk.NORMAL)
             return
 
-        self.run_btn.configure(state=tk.DISABLED)
         self.log("=== ЗАПУСК ВЕРИФИКАЦИИ ДЕКЛАРАЦИЙ ===")
 
         try:
@@ -146,10 +209,13 @@ class CustomsApp:
             with open(art_file, "r", encoding="utf-8") as f:
                 lines = [line.strip() for line in f if line.strip()]
 
-            for line in lines:
+            total_lines = len(lines)
+            
+            for index, line in enumerate(lines):
                 parts = line.split()
                 if len(parts) < 6:
                     self.log(f"[ПРОПУСК] Неверный формат строки: {line[:20]}...")
+                    self.update_progress(index + 1, total_lines)
                     continue
 
                 article = parts[0]
@@ -163,6 +229,7 @@ class CustomsApp:
                     quantity_int = int(quantity)
                 except ValueError:
                     self.log(f"[ОШИБКА] Неверное число количества у {article}")
+                    self.update_progress(index + 1, total_lines)
                     continue
 
                 possible_names = [article] + [f"{article}-{i}" for i in range(1, 11)]
@@ -190,6 +257,7 @@ class CustomsApp:
                     not_found_articles.append(article)
                     self.log(f"Артикул {article}: Файлы декларации НЕ найдены")
                     current_row += 2
+                    self.update_progress(index + 1, total_lines)
                     continue
 
                 all_product_codes = []
@@ -245,12 +313,15 @@ class CustomsApp:
                 if total_codes_count == 0:
                     ws[f"A{current_row}"] = "НЕТУ"
                     current_row += 2
+                    self.update_progress(index + 1, total_lines)
                     continue
 
                 for code in all_product_codes:
                     ws[f"A{current_row}"] = code
                     current_row += 1
                 current_row += 1
+                
+                self.update_progress(index + 1, total_lines)
 
             for col in ws.columns:
                 max_length = max(len(str(cell.value or '')) for cell in col)
@@ -295,12 +366,22 @@ class CustomsApp:
                 self.log("[✓] Расхождений по количеству кодов во внутрянке не обнаружено.")
             
             self.log("\n============================================================")
+            self.status_label.configure(text="Готово!")
             messagebox.showinfo("Успех", f"Обработка завершена!\nФайл сохранен: {out_file}")
+
+            if self.auto_open.get():
+                try:
+                    os.startfile(out_file)
+                except AttributeError:
+                    import subprocess
+                    subprocess.call(['open', out_file] if sys.platform == 'darwin' else ['xdg-open', out_file])
 
         except Exception as ex:
             messagebox.showerror("Критический сбой", f"Произошла ошибка во время сборки:\n{ex}")
             self.log(f"[КРАШ СИСТЕМЫ] {ex}")
+            self.status_label.configure(text="Критический сбой")
         finally:
+            self.is_running = False
             self.run_btn.configure(state=tk.NORMAL)
 
 
