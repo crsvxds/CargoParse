@@ -362,17 +362,17 @@ MigrationBackup/
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
 
-# Игнорировать временные файлы и результаты сборки
+# игнорировать временные файлы и результаты сборки
 dist/
 build/
 output/
 __pycache__/
 *.spec
 
-# Игнорировать конфиги и результаты
+# игнорировать конфиги и результаты
 result.xlsx
 customs_config.json
 
-# Игнорировать системные файлы
+# игнорировать системные файлы
 .DS_Store
 .vscode/
