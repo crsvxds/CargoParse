@@ -361,3 +361,11 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# Игнорировать реальные данные таможни
+articles.txt
+codes/
+result.xlsx
+
+# Игнорировать кэш Python
+__pycache__/
