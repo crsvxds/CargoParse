@@ -376,3 +376,11 @@ customs_config.json
 # игнорировать системные файлы
 .DS_Store
 .vscode/
+
+# Игнорировать исполняемый файл
+main.exe
+
+# Игнорировать решение Visual Studio
+*.sln
+*.suo
+*.user
