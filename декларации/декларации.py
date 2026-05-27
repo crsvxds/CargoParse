@@ -2,6 +2,7 @@
 import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+import threading  # Импортируем потоки
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Alignment
@@ -12,7 +13,7 @@ class CustomsApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Customs Data Consolidator (ВЭД Китай)")
-        self.root.geometry("1000x550")
+        self.root.geometry("750x550")
         self.root.minsize(650, 450)
 
         # Переменные путей
@@ -57,7 +58,7 @@ class CustomsApp:
         btn_frame = ttk.Frame(main_frame)
         btn_frame.pack(fill=tk.X, pady=10)
 
-        self.run_btn = ttk.Button(btn_frame, text="СТАРТ ОБРАБОТКИ", command=self.start_processing)
+        self.run_btn = ttk.Button(btn_frame, text="СТАРТ ОБРАБОТКИ", command=self.start_processing_thread)
         self.run_btn.pack(side=tk.LEFT, padx=5, ipadx=10, ipady=5)
 
         self.save_log_btn = ttk.Button(btn_frame, text="Сохранить лог в .txt", command=self.save_log_to_file)
@@ -105,6 +106,12 @@ class CustomsApp:
                 messagebox.showinfo("Успех", f"Лог успешно сохранен в:\n{file_path}")
             except Exception as e:
                 messagebox.showerror("Ошибка", f"Не удалось сохранить файл:\n{e}")
+
+    # Новый метод-посредник, который запускает тяжелую обработку в фоновом потоке
+    def start_processing_thread(self):
+        processing_thread = threading.Thread(target=self.start_processing)
+        processing_thread.daemon = True  # Чтобы поток закрывался, если закрыть главное окно
+        processing_thread.start()
 
     def start_processing(self):
         self.clear_log()
@@ -195,7 +202,6 @@ class CustomsApp:
                         file_name_short = os.path.basename(file_path)
                         files_loaded_names.append(file_name_short)
                         
-                        # Память очищается строго под каждый конкретный файл отдельно
                         code_source_map = {}  
                         
                         for value in codes_df[0].tolist():
@@ -203,7 +209,6 @@ class CustomsApp:
                                 continue
                             cleaned_code = str(value).strip()
                             if cleaned_code:
-                                # Проверка на дубликаты СТРОГО внутри текущего файла
                                 if cleaned_code in code_source_map:
                                     dup_count_for_article += 1
                                     self.log(
@@ -212,7 +217,6 @@ class CustomsApp:
                                         f"     • Файл с повторением: {file_name_short}"
                                     )
                                 else:
-                                    # Запоминаем код для проверки внутри этого же файла
                                     code_source_map[cleaned_code] = file_name_short
                                     all_product_codes.append(cleaned_code)
                                     
