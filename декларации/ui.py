@@ -6,7 +6,7 @@ from tkinter import filedialog, messagebox, ttk
 import threading
 import subprocess
 
-# Импортируем оба режима из нашего движка core.py
+# Импортируем исходные два режима из движка core.py
 from core import process_customs_data, process_cleaner_mode
 
 # Базовые константы путей для быстрого набора
@@ -47,10 +47,9 @@ class CustomsApp:
     def __init__(self, root):
         self.root = root
         self.root.title("CargoParse V2 — Professional Suite")
-        self.root.geometry("900x900")
+        self.root.geometry("900x920")
         self.root.minsize(850, 750)
         
-        # Создаем папку результатов, если её ещё нет
         if not os.path.exists(DEFAULT_RESULT):
             os.makedirs(DEFAULT_RESULT, exist_ok=True)
         
@@ -65,12 +64,17 @@ class CustomsApp:
 
         self.app_mode = tk.StringVar(value="verify") 
 
-        # Изначально поля можно оставить пустыми или дефолтными
         self.articles_path = tk.StringVar(value=DEFAULT_ART)
         self.codes_dir = tk.StringVar(value=DEFAULT_CODES)
         self.output_dir = tk.StringVar(value=DEFAULT_RESULT)
         
         self.auto_open = tk.BooleanVar(value=True)
+
+        self.check_boxes_var = tk.BooleanVar(value=True)
+        # =================================================================
+        # ГАЛОЧКА ИЗНАЧАЛЬНО ВСЕГДА ВКЛЮЧЕНА (value=True)
+        # =================================================================
+        self.remove_brackets_var = tk.BooleanVar(value=True) 
 
         self.stat_total = tk.StringVar(value="0")
         self.stat_ok = tk.StringVar(value="0")
@@ -101,7 +105,6 @@ class CustomsApp:
         self.style.configure("TButton", font=("Segoe UI", 10, "bold"), background=self.primary_color, foreground="#ffffff", borderwidth=0, focuscolor=self.primary_color)
         self.style.map("TButton", background=[('active', '#3b5bdb'), ('disabled', '#cbd5e1')], foreground=[('disabled', '#94a3b8')])
 
-        # Стиль для кнопки быстрого набора
         self.style.configure("Preset.TButton", background="#2d3748", foreground="#ffffff")
         self.style.map("Preset.TButton", background=[('active', '#1a202c')])
 
@@ -152,15 +155,13 @@ class CustomsApp:
             ToolTip(card, tip)
             self.dash_blocks.append(lbl_t)
 
-        # 3. НАСТРОЙКИ ПУТЕЙ (С КНОПКОЙ БЫСТРОГО НАБОРА)
+        # 3. НАСТРОЙКИ ПУТЕЙ
         self.path_frame = ttk.LabelFrame(main_frame, text=" Настройки путей к данным ", padding="15")
         self.path_frame.pack(fill=tk.X, pady=(0, 15))
         self.path_frame.columnconfigure(1, weight=1)
 
-        # КНОПКА БЫСТРОГО НАБОРА (ПРЕСЕТ) ВСТАВЛЕНА НАВЕРХ ПАНЕЛИ ПУТЕЙ
         self.btn_preset = ttk.Button(self.path_frame, text="⚡  ЗАПОЛНИТЬ РАБОЧУЮ ПАПКУ (БЫСТРЫЙ НАБОР V2)", style="Preset.TButton", command=self.apply_quick_preset)
         self.btn_preset.grid(row=0, column=0, columnspan=3, sticky=tk.EW, pady=(0, 10))
-        ToolTip(self.btn_preset, "Один клик — и программа мгновенно пропишет пути к статьям, кодам и папке result из ТЗ.")
 
         # Строка 1: Файл артикулов
         self.lbl_art = ttk.Label(self.path_frame, text="Файл артикулов:")
@@ -170,7 +171,7 @@ class CustomsApp:
         self.btn_art = ttk.Button(self.path_frame, text="Обзор...", command=lambda: self.articles_path.set(filedialog.askopenfilename(initialdir=BASE_DIR) or self.articles_path.get()))
         self.btn_art.grid(row=1, column=2, pady=8, padx=(5, 0))
 
-        # Строка 2: Папка с кодами / Источник
+        # Строка 2: Папка с кодами
         self.lbl_source = ttk.Label(self.path_frame, text="Папка с кодами:")
         self.lbl_source.grid(row=2, column=0, sticky=tk.W, pady=8, padx=(0, 10))
         self.ent_codes = ttk.Entry(self.path_frame, textvariable=self.codes_dir)
@@ -185,6 +186,16 @@ class CustomsApp:
         self.ent_out.grid(row=3, column=1, sticky=tk.EW, pady=8, padx=5)
         self.btn_out = ttk.Button(self.path_frame, text="Обзор...", command=lambda: self.output_dir.set(filedialog.askdirectory(initialdir=BASE_DIR) or self.output_dir.get()))
         self.btn_out.grid(row=3, column=2, pady=8, padx=(5, 0))
+
+        # Строка 4: Учитывать коробки
+        self.box_chk = ttk.Checkbutton(self.path_frame, text="Учитывать коробки (УралТрейд)", variable=self.check_boxes_var)
+        self.box_chk.grid(row=4, column=0, columnspan=3, sticky=tk.W, pady=(8, 0))
+        ToolTip(self.box_chk, "Если включено: сверяются штуки и упаковочные коробки для Трейда.\nЕсли отключено: по всем файлам считаются только коды маркировок.")
+
+        # Строка 5: Галочка удаления скобок
+        self.bracket_chk = ttk.Checkbutton(self.path_frame, text="Удалять скобки (01), (00), (21) из кодов", variable=self.remove_brackets_var)
+        self.bracket_chk.grid(row=5, column=0, columnspan=3, sticky=tk.W, pady=(4, 0))
+        ToolTip(self.bracket_chk, "Если включено: опускает скобки вокруг (01), (00), (21) преобразовывая их в голые цифры в процессе считывания. Остальные скобки не трогает.")
 
         # 4. ЖУРНАЛ РАБОТЫ (ТЕМНЫЙ ТЕРМИНАЛ)
         log_frame = ttk.LabelFrame(main_frame, text=" Подробный журнал работы ", padding="5")
@@ -210,7 +221,7 @@ class CustomsApp:
         self.progress_label = ttk.Label(sub_frame, text="0%", font=("Segoe UI", 9, "bold"), foreground=self.primary_color, width=6, anchor=tk.E)
         self.progress_label.pack(side=tk.RIGHT)
 
-        # 6. НИЖНЯЯ ПАНЕЛЬ С КНОПКАМИ
+        # 6. КНОПКИ
         btn_frame = ttk.Frame(main_frame)
         btn_frame.pack(fill=tk.X)
         
@@ -222,12 +233,10 @@ class CustomsApp:
         
         ttk.Checkbutton(btn_frame, text="Открыть папку результатов", variable=self.auto_open).pack(side=tk.LEFT, padx=15)
 
-    # ЛОГИКА КНОПКИ БЫСТРОГО НАБОРА
     def apply_quick_preset(self):
         self.articles_path.set(DEFAULT_ART)
         self.output_dir.set(DEFAULT_RESULT)
         
-        # Папку-источник ставим в зависимости от активного режима
         if self.app_mode.get() == "clean":
             self.codes_dir.set(DEFAULT_RESULT)
         else:
@@ -239,7 +248,8 @@ class CustomsApp:
         if self.app_mode.get() == "clean":
             self.ent_art.configure(state=tk.DISABLED)
             self.btn_art.configure(state=tk.DISABLED)
-            # Принудительно меняем источник на result для удобства очистки
+            self.box_chk.configure(state=tk.DISABLED)
+            
             self.codes_dir.set(DEFAULT_RESULT)
             
             self.lbl_source.configure(text="Папка-источник (result):")
@@ -249,7 +259,8 @@ class CustomsApp:
         else:
             self.ent_art.configure(state=tk.NORMAL)
             self.btn_art.configure(state=tk.NORMAL)
-            # Возвращаем источник на коды
+            self.box_chk.configure(state=tk.NORMAL)
+            
             self.codes_dir.set(DEFAULT_CODES)
             
             self.lbl_source.configure(text="Папка с кодами:")
@@ -263,15 +274,11 @@ class CustomsApp:
             messagebox.showwarning("Лог пуст", "Нет данных для сохранения.")
             return
         file_path = filedialog.asksaveasfilename(
-            title="Сохранить лог",
-            initialdir=self.output_dir.get(),
-            defaultextension=".txt",
-            filetypes=[("Текстовые файлы", "*.txt"), ("Все файлы", "*.*")],
-            initialfile="cargoparse_log.txt"
+            title="Сохранить лог", initialdir=self.output_dir.get(), defaultextension=".txt",
+            filetypes=[("Текстовые файлы", "*.txt"), ("Все файлы", "*.*")], initialfile="cargoparse_log.txt"
         )
         if file_path:
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(content)
+            with open(file_path, "w", encoding="utf-8") as f: f.write(content)
             messagebox.showinfo("Готово", f"Лог успешно сохранён:\n{file_path}")
 
     def update_status_phrases_loop(self):
@@ -323,6 +330,8 @@ class CustomsApp:
             return
 
         try:
+            is_remove_brackets_enabled = self.remove_brackets_var.get()
+
             if self.app_mode.get() == "verify":
                 if not os.path.exists(art):
                     messagebox.showerror("Ошибка", f"Файл {art} не найден!")
@@ -330,21 +339,29 @@ class CustomsApp:
                     self.run_btn.configure(state=tk.NORMAL)
                     return
                 self.log("=== ЗАПУСК ПОЛНОЙ ВЕРИФИКАЦИИ ПО АРТИКУЛАМ ===")
-                process_customs_data(art, code_dir, out_dir, self.log, self.update_progress, self.set_stat)
+                
+                is_check_boxes_enabled = self.check_boxes_var.get()
+                
+                process_customs_data(
+                    art, code_dir, out_dir, 
+                    self.log, self.update_progress, self.set_stat, 
+                    check_boxes=is_check_boxes_enabled,
+                    remove_brackets=is_remove_brackets_enabled
+                )
             else:
                 self.log("=== ЗАПУСК РЕЖИМА БЫСТРОЙ ОЧИСТКИ (ФОРМАТТЕР СТОЛБЦОВ) ===")
-                process_cleaner_mode(code_dir, out_dir, self.log, self.update_progress, self.set_stat)
+                process_cleaner_mode(
+                    code_dir, out_dir, self.log, self.update_progress, self.set_stat,
+                    remove_brackets=is_remove_brackets_enabled
+                )
 
             self.status_label.configure(text="Обработка завершена успешно!")
             messagebox.showinfo("Успех", f"Операция выполнена!\nВсе результаты сохранены в:\n{out_dir}")
             
             if self.auto_open.get():
-                if sys.platform == 'win32':
-                    os.startfile(out_dir)
-                elif sys.platform == 'darwin':
-                    subprocess.call(['open', out_dir])
-                else:
-                    subprocess.call(['xdg-open', out_dir])
+                if sys.platform == 'win32': os.startfile(out_dir)
+                elif sys.platform == 'darwin': subprocess.call(['open', out_dir])
+                else: subprocess.call(['xdg-open', out_dir])
                     
         except Exception as ex:
             messagebox.showerror("Критический сбой", f"Ошибка: {ex}")

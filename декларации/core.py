@@ -1,4 +1,5 @@
 ﻿import os
+import re
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Alignment
@@ -9,23 +10,33 @@ def clean_raw_value(val):
     if not v or v.lower() == 'nan' or v == 'НЕТУ': 
         return ""
     
-    # Отрезаем текстовые приписки
     if 'код упаковки:' in v.lower():
         parts = v.split(':', 1)
         if len(parts) > 1:
             v = parts[1].strip()
             
-    # Игнорируем любые текстовые шапки
     lower_v = v.lower()
     if 'код маркировки' in lower_v or 'код упаковки' in lower_v or 'артикул' in lower_v:
         return ""
         
     return v
 
+# --- ТОЧЕЧНОЕ УДАЛЕНИЕ СКОБОК ТОЛЬКО ДЛЯ 00, 01, 21 ---
+def remove_specific_brackets(val):
+    if pd.isna(val):
+        return ""
+    v_str = str(val).strip()
+    if v_str.lower() == "nan" or v_str == "":
+        return ""
+    
+    # Находит именно (00), (01) или (21) в любом месте строки и убирает только у них скобки
+    v_str = re.sub(r'\((00|01|21)\)', r'\1', v_str)
+    return v_str
+
 # =================================================================
 # РЕЖИМ 1: ОСНОВНАЯ ВЕРИФИКАЦИЯ (Сверка по articles.txt)
 # =================================================================
-def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_callback, stats_callback):
+def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_callback, stats_callback, check_boxes=True, remove_brackets=False):
     wb_import = Workbook()
     ws_import = wb_import.active
     ws_import.title = "УралИмпорт"
@@ -41,7 +52,6 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
     duplicate_summary = {} 
     article_routing_summary = []
 
-    # Глобальная база для сквозной проверки уникальности
     global_seen_codes = {}
 
     with open(art_file, "r", encoding="utf-8") as f:
@@ -83,6 +93,11 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
             progress_callback(index + 1, total_lines)
             continue
 
+        try:
+            cargo_places_int = int(cargo_places)
+        except ValueError:
+            cargo_places_int = 0
+
         # Умный поиск файлов по префиксу
         matched_files = []
         for file_name in all_files:
@@ -102,7 +117,9 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
             progress_callback(index + 1, total_lines)
             continue
 
-        # ШАГ 1: Считываем сырые данные
+        matched_files.sort(key=lambda x: (os.path.splitext(os.path.basename(x))[0] != article, x))
+
+        # ШАГ 1: Поочередно считываем данные из каждого файла в корне
         file_data_list = []
         for file_path in matched_files:
             try:
@@ -125,7 +142,14 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
                             
                         if not mark_val or mark_val.lower() == 'nan' or mark_val.lower().startswith('код'):
                             continue
-                        if mark_val.startswith("(00)"):
+                        
+                        # Если включена галочка — очищаем скобки у 00, 01, 21
+                        if remove_brackets:
+                            mark_val = remove_specific_brackets(mark_val)
+                            
+                        # === ИСПРАВЛЕННАЯ ЛОГИКА СКИПА КОРОБОК ДЛЯ ТРЕЙДА ===
+                        # Пропускаем, если строка осталась в скобках (00) или превратилась в 00 (если убрали скобки)
+                        if mark_val.startswith("(00)") or mark_val.startswith("00"):
                             continue
                             
                         f_codes_raw.append((mark_val, last_pack_code))
@@ -134,6 +158,8 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
                         for val in df.iloc[1:, 0].dropna():
                             v = str(val).strip()
                             if v and v.lower() != 'nan':
+                                if remove_brackets:
+                                    v = remove_specific_brackets(v)
                                 f_codes_raw.append(v)
                                 
                 file_data_list.append({
@@ -144,134 +170,148 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
             except Exception as e:
                 log_callback(f"[ОШИБКА ЧТЕНИЯ] файла {os.path.basename(file_path)}. Детали: {e}")
 
-        def get_unique_count(files_subset):
-            seen = set()
-            for f in files_subset:
-                if f['type'] == 'trade':
-                    for mark, pkg in f['raw_codes']: seen.add(mark)
-                else:
-                    for mark in f['raw_codes']: seen.add(mark)
-            return len(seen)
-
-        # ШАГ 2: Автокоррекция конфликтов версий файлов
-        combined_count = get_unique_count(file_data_list)
-        selected_files = file_data_list
-        
-        if combined_count != quantity_int:
-            perfect_matches = []
-            for f in file_data_list:
-                if get_unique_count([f]) == quantity_int:
-                    perfect_matches.append(f)
-            
-            if len(perfect_matches) == 1:
-                selected_files = perfect_matches
-                log_callback(f"   [АВТОКОРРЕКЦИЯ] Артикул {article}: Общая сумма ({combined_count}) не совпала.")
-                log_callback(f"   [АВТОКОРРЕКЦИЯ] Взят ТОЛЬКО файл '{selected_files[0]['name']}' (ровно {quantity_int} шт.).")
-
-        # ШАГ 3: Финальная обработка и сквозной контроль дублей
-        all_product_codes = []
+        # ШАГ 2: Собираем коды со всей пачки найденных файлов, ведем сквозной учет дублей
+        trade_groups = {}  
+        import_groups = {} 
         files_loaded_names = []
+        
         dup_count_for_article = 0
-        trade_groups = {}
-        article_type = "import"
         local_art_seen = set()
+        
+        total_codes_count = 0
+        actual_packages_set = set()
 
-        for fdata in selected_files:
+        for fdata in file_data_list:
             current_file_name = fdata['name']
             files_loaded_names.append(current_file_name)
             
             if fdata['type'] == 'trade':
-                article_type = 'trade'
+                if current_file_name not in trade_groups:
+                    trade_groups[current_file_name] = {}
+                    
                 for mark_val, pkg_code in fdata['raw_codes']:
-                    if mark_val in local_art_seen:
+                    if mark_val in local_art_seen or mark_val in global_seen_codes:
                         dup_count_for_article += 1
                         total_dups_counter += 1
                         stats_callback("dups", total_dups_counter)
-                    elif mark_val in global_seen_codes:
-                        dup_count_for_article += 1
-                        total_dups_counter += 1
-                        stats_callback("dups", total_dups_counter)
-                        log_callback(f"   [МЕЖФАЙЛОВЫЙ ДУБЛЬ] Артикул {article}: Код {mark_val} уже был в {global_seen_codes[mark_val]}")
+                        if mark_val in global_seen_codes:
+                            log_callback(f"   [МЕЖФАЙЛОВЫЙ ДУБЛЬ] Артикул {article}: Код {mark_val} уже был в {global_seen_codes[mark_val]}")
                     else:
                         local_art_seen.add(mark_val)
                         global_seen_codes[mark_val] = current_file_name
-                        all_product_codes.append(mark_val)
+                        total_codes_count += 1
                         
-                        if pkg_code not in trade_groups:
-                            trade_groups[pkg_code] = []
-                        trade_groups[pkg_code].append(mark_val)
+                        if not pkg_code.startswith("БЕЗ_КОДА"):
+                            actual_packages_set.add(pkg_code)
+                            
+                        if pkg_code not in trade_groups[current_file_name]:
+                            trade_groups[current_file_name][pkg_code] = []
+                        trade_groups[current_file_name][pkg_code].append(mark_val)
             else:
+                if current_file_name not in import_groups:
+                    import_groups[current_file_name] = []
+                    
                 for mark_val in fdata['raw_codes']:
-                    if mark_val in local_art_seen:
+                    if mark_val in local_art_seen or mark_val in global_seen_codes:
                         dup_count_for_article += 1
                         total_dups_counter += 1
                         stats_callback("dups", total_dups_counter)
-                    elif mark_val in global_seen_codes:
-                        dup_count_for_article += 1
-                        total_dups_counter += 1
-                        stats_callback("dups", total_dups_counter)
-                        log_callback(f"   [МЕЖФАЙЛОВЫЙ ДУБЛЬ] Артикул {article}: Код {mark_val} уже был в {global_seen_codes[mark_val]}")
+                        if mark_val in global_seen_codes:
+                            log_callback(f"   [МЕЖФАЙЛОВЫЙ ДУБЛЬ] Артикул {article}: Код {mark_val} уже был в {global_seen_codes[mark_val]}")
                     else:
                         local_art_seen.add(mark_val)
                         global_seen_codes[mark_val] = current_file_name
-                        all_product_codes.append(mark_val)
+                        total_codes_count += 1
+                        import_groups[current_file_name].append(mark_val)
 
         if dup_count_for_article > 0:
             duplicate_summary[article] = dup_count_for_article
 
-        total_codes_count = len(all_product_codes)
-        type_label = "УралТрейд" if article_type == "trade" else "УралИмпорт"
-        article_routing_summary.append((article, f"✅ {type_label}"))
+        actual_packages_count = len(actual_packages_set)
 
-        if total_codes_count != quantity_int:
-            diff = abs(quantity_int - total_codes_count)
-            status_text = "меньше" if total_codes_count < quantity_int else "больше"
-            diff_str = f"В файлах: {total_codes_count}, {status_text.capitalize()} на {diff}"
+        # ШАГ 3: Формируем строку статуса (план vs факт) для Excel-шапки
+        status_parts = []
+        status_parts.append(f"Штук: план {quantity_int}, факт {total_codes_count}")
+        
+        if trade_groups and cargo_places_int > 0 and check_boxes:
+            status_parts.append(f"Коробок: план {cargo_places_int}, факт {actual_packages_count}")
             
-            files_list_str = ", ".join(files_loaded_names)
+        diff_str = " | ".join(status_parts)
+
+        if trade_groups and import_groups:
+            type_label = "Смешанный (Трейд+Импорт)"
+        elif trade_groups:
+            type_label = "УралТрейд"
+        else:
+            type_label = "УралИмпорт"
+
+        if trade_groups:
+            if check_boxes and cargo_places_int > 0:
+                is_mismatch = (total_codes_count != quantity_int) or (actual_packages_count != cargo_places_int)
+            else:
+                is_mismatch = (total_codes_count != quantity_int)
+        else:
+            is_mismatch = (total_codes_count != quantity_int)
+
+        if is_mismatch:
+            log_callback(f"[{type_label}] Артикул {article}: РАСХОЖДЕНИЕ! ({diff_str}). Но данные добавлены.")
+            article_routing_summary.append((article, f"⚠️ Расхождение ({diff_str})"))
             mismatched_articles.append({
                 "article": article, "expected": quantity_int, "actual": total_codes_count,
-                "diff": diff, "status": status_text, "files": files_list_str
+                "diff": abs(quantity_int - total_codes_count), "status": "Расхождение", "files": ", ".join(files_loaded_names)
             })
-            log_callback(f"[{type_label}] Артикул {article}: РАСХОЖДЕНИЕ (Ожидалось {quantity_int}, собрано {total_codes_count})")
             bad_counter += 1
             stats_callback("bad", bad_counter)
         else:
-            diff_str = f"В файлах: {total_codes_count}, Совпало"
-            log_callback(f"[{type_label}] ... Артикул {article}: OK (Совпало {total_codes_count} шт.)")
+            article_routing_summary.append((article, f"✅ {type_label} (Совпало)"))
+            log_msg = f"[{type_label}] ... Артикул {article}: OK (Штук: {total_codes_count}"
+            if trade_groups and check_boxes:
+                log_msg += f", Коробок: {actual_packages_count})"
+            else:
+                log_msg += ")"
+            log_callback(log_msg)
+            
             ok_counter += 1
             stats_callback("ok", ok_counter)
 
-        # Вывод в Excel (Сводная логика)
-        if article_type == "trade":
-            ws = ws_trade
-            if total_codes_count == 0:
-                header_row = curr_trade
-                ws[f"A{header_row}"] = "Код маркировки"; ws[f"B{header_row}"] = article; ws[f"C{header_row}"] = name; ws[f"D{header_row}"] = description; ws[f"E{header_row}"] = cargo_places; ws[f"F{header_row}"] = diff_str; ws[f"G{header_row}"] = quantity; ws[f"H{header_row}"] = unit; ws[f"I{header_row}"] = "Код упаковки: НЕТУ"
-                curr_trade += 1
-                ws[f"A{curr_trade}"] = "НЕТУ"
-                curr_trade += 2
-            else:
-                for pkg_code, codes_list in trade_groups.items():
+        # ШАГ 4: Поочередная выгрузка пачек в Excel
+        if trade_groups:
+            for file_name, p_groups in trade_groups.items():
+                for pkg_code, codes_list in p_groups.items():
                     if not codes_list: continue
-                    header_row = curr_trade
-                    ws[f"A{header_row}"] = "Код маркировки"; ws[f"B{header_row}"] = article; ws[f"C{header_row}"] = name; ws[f"D{header_row}"] = description; ws[f"E{header_row}"] = cargo_places; ws[f"F{header_row}"] = diff_str; ws[f"G{header_row}"] = quantity; ws[f"H{header_row}"] = unit; ws[f"I{header_row}"] = f"Код упаковки: {pkg_code}"
+                    ws_trade[f"A{curr_trade}"] = "Код маркировки"
+                    ws_trade[f"B{curr_trade}"] = file_name
+                    ws_trade[f"C{curr_trade}"] = name
+                    ws_trade[f"D{curr_trade}"] = description
+                    ws_trade[f"E{curr_trade}"] = cargo_places
+                    ws_trade[f"F{curr_trade}"] = diff_str
+                    ws_trade[f"G{curr_trade}"] = quantity
+                    ws_trade[f"H{curr_trade}"] = unit
+                    
+                    # Очищаем скобки у кода упаковки в шапке блока, если галочка активна
+                    display_pkg_code = remove_specific_brackets(pkg_code) if remove_brackets else pkg_code
+                    ws_trade[f"I{curr_trade}"] = f"Код упаковки: {display_pkg_code}"
+                    
                     curr_trade += 1
                     for code in codes_list:
-                        ws[f"A{curr_trade}"] = code
+                        ws_trade[f"A{curr_trade}"] = code
                         curr_trade += 1
                     curr_trade += 1 
-        else:
-            ws = ws_import
-            header_row = curr_import
-            ws[f"A{header_row}"] = "Код маркировки"; ws[f"B{header_row}"] = article; ws[f"C{header_row}"] = name; ws[f"D{header_row}"] = description; ws[f"E{header_row}"] = cargo_places; ws[f"F{header_row}"] = diff_str; ws[f"G{header_row}"] = quantity; ws[f"H{header_row}"] = unit
-            curr_import += 1
-            if total_codes_count == 0:
-                ws[f"A{curr_import}"] = "НЕТУ"
-                curr_import += 2
-            else:
-                for code in all_product_codes:
-                    ws[f"A{curr_import}"] = code
+                    
+        if import_groups:
+            for file_name, codes_list in import_groups.items():
+                if not codes_list: continue
+                ws_import[f"A{curr_import}"] = "Код маркировки"
+                ws_import[f"B{curr_import}"] = file_name
+                ws_import[f"C{curr_import}"] = name
+                ws_import[f"D{curr_import}"] = description
+                ws_import[f"E{curr_import}"] = cargo_places 
+                ws_import[f"F{curr_import}"] = diff_str
+                ws_import[f"G{curr_import}"] = quantity
+                ws_import[f"H{curr_import}"] = unit
+                curr_import += 1
+                for code in codes_list:
+                    ws_import[f"A{curr_import}"] = code
                     curr_import += 1
                 curr_import += 1 
 
@@ -296,7 +336,7 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
         files_created.append(out_trade)
 
     log_callback("\n============================================================")
-    log_callback("ФИНАЛЬНЫЙ ОТЧЕТ ПО ОШИБКАМ И РАСХОЖДЕНИЯМ:")
+    log_callback("ФИНАЛЬНЫЙ ОТЧЕТ ПО РАСХОЖДЕНИЯМ:")
     log_callback("============================================================\n")
 
     if not files_created:
@@ -321,7 +361,7 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
 # =================================================================
 # РЕЖИМ 2: БЫСТРАЯ ОЧИСТКА (Форматтер / Клинер)
 # =================================================================
-def process_cleaner_mode(c_folder, out_dir, log_callback, progress_callback, stats_callback):
+def process_cleaner_mode(c_folder, out_dir, log_callback, progress_callback, stats_callback, remove_brackets=False):
     all_files = [f for f in os.listdir(c_folder) if f.endswith(('.xlsx', '.xls')) and not f.startswith('~')]
     trade_files = [f for f in all_files if 'трейд' in f.lower() and 'clean' not in f.lower()]
     import_files = [f for f in all_files if 'импорт' in f.lower() and 'clean' not in f.lower()]
@@ -333,13 +373,11 @@ def process_cleaner_mode(c_folder, out_dir, log_callback, progress_callback, sta
         log_callback("⚠️ В папке не найдены файлы, содержащие слова 'трейд' или 'импорт'.")
         return
 
-    # Глобальные базы для сквозной проверки в режиме очистки
     global_seen_marks = set()
     global_seen_packs = set()
     total_duplicates_removed = 0
     processed_count = 0
 
-    # Обработка Трейд
     for f_name in trade_files:
         log_callback(f"⏳ Обработка ТРЕЙД: {f_name}")
         file_path = os.path.join(c_folder, f_name)
@@ -353,6 +391,9 @@ def process_cleaner_mode(c_folder, out_dir, log_callback, progress_callback, sta
             if df.shape[1] > 0:
                 val_a = clean_raw_value(df.iloc[i, 0])
                 if val_a:
+                    if remove_brackets:
+                        val_a = remove_specific_brackets(val_a)
+                        
                     if val_a not in global_seen_marks:
                         global_seen_marks.add(val_a)
                         mark_codes.append(val_a)
@@ -363,6 +404,9 @@ def process_cleaner_mode(c_folder, out_dir, log_callback, progress_callback, sta
             if df.shape[1] > 8:
                 val_i = clean_raw_value(df.iloc[i, 8])
                 if val_i:
+                    if remove_brackets:
+                        val_i = remove_specific_brackets(val_i)
+                        
                     if val_i not in global_seen_packs:
                         global_seen_packs.add(val_i)
                         pack_codes.append(val_i)
@@ -392,7 +436,6 @@ def process_cleaner_mode(c_folder, out_dir, log_callback, progress_callback, sta
         stats_callback("ok", processed_count)
         stats_callback("dups", total_duplicates_removed)
 
-    # Обработка Импорт
     for f_name in import_files:
         log_callback(f"⏳ Обработка ИМПОРТ: {f_name}")
         file_path = os.path.join(c_folder, f_name)
@@ -405,6 +448,9 @@ def process_cleaner_mode(c_folder, out_dir, log_callback, progress_callback, sta
             if df.shape[1] > 0:
                 val_a = clean_raw_value(df.iloc[i, 0])
                 if val_a:
+                    if remove_brackets:
+                        val_a = remove_specific_brackets(val_a)
+                        
                     if val_a not in global_seen_marks:
                         global_seen_marks.add(val_a)
                         mark_codes.append(val_a)
