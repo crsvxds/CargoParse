@@ -3,6 +3,9 @@ import re
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Alignment
+import hashlib
+import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ УМНОГО ПРЕОБРАЗОВАНИЯ В СТРОКУ (УБИРАЕТ .0) ---
 def safe_str(val):
@@ -12,6 +15,38 @@ def safe_str(val):
     if isinstance(val, float) and val.is_integer():
         return str(int(val))
     return str(val).strip()
+
+# --- ФУНКЦИИ КЭШИРОВАНИЯ ---
+def get_file_hash(file_path):
+    """Вычисляет хэш файла для определения изменений"""
+    try:
+        hasher = hashlib.md5()
+        with open(file_path, 'rb') as f:
+            buf = f.read(65536)  # Читаем блоками
+            while len(buf) > 0:
+                hasher.update(buf)
+                buf = f.read(65536)
+        return hasher.hexdigest()
+    except:
+        return None
+
+def load_cache(cache_file):
+    """Загружает кэш из файла"""
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_cache(cache_file, cache_data):
+    """Сохраняет кэш в файл"""
+    try:
+        with open(cache_file, 'w', encoding='utf-8') as f:
+            json.dump(cache_data, f, indent=2)
+    except:
+        pass
 
 # --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ОЧИСТКИ МУСОРА ---
 def clean_raw_value(val):
@@ -46,7 +81,7 @@ def remove_specific_brackets(val):
 # =================================================================
 # РЕЖИМ 1: ОСНОВНАЯ ВЕРИФИКАЦИЯ (Сверка по articles.txt)
 # =================================================================
-def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_callback, stats_callback, check_boxes=True, remove_brackets=False):
+def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_callback, stats_callback, check_boxes=True, remove_brackets=False, invoice_prefix="", cancel_callback=None, dry_run=False, file_callback=None):
     wb_import = Workbook()
     ws_import = wb_import.active
     ws_import.title = "УралИмпорт"
@@ -141,6 +176,15 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
 
     # 3. ОСНОВНОЙ ЦИКЛ ОБРАБОТКИ
     for index, (article, adata) in enumerate(articles_dict.items()):
+        # Проверка на отмену операции
+        if cancel_callback and cancel_callback():
+            log_callback("[⚠] Операция отменена пользователем.")
+            return
+
+        # Уведомляем о текущем артикуле
+        if file_callback:
+            file_callback(f"Артикул {article}")
+
         name = adata['name']
         description = adata['desc']
         quantity_int = adata['qty']
@@ -348,22 +392,34 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
             for cell in col: cell.alignment = Alignment(vertical="top")
             work_sheet.column_dimensions[column].width = min(max_length + 5, 60)
 
-    out_import = os.path.join(out_dir, "УралИмпорт.xlsx")
-    out_trade = os.path.join(out_dir, "УралТрейд.xlsx")
-    out_receipt = os.path.join(out_dir, "рассписка.xlsx")
-    
+    # ДОБАВЛЕНО: Формирование префикса для имен файлов
+    prefix = f"{invoice_prefix.strip()} " if invoice_prefix.strip() else ""
+
+    out_import = os.path.join(out_dir, f"{prefix}УралИмпорт.xlsx")
+    out_trade = os.path.join(out_dir, f"{prefix}УралТрейд.xlsx")
+    out_receipt = os.path.join(out_dir, f"{prefix}рассписка.xlsx")
+
     files_created = []
-    
-    if curr_import > 1:
-        wb_import.save(out_import)
-        files_created.append(out_import)
-    if curr_trade > 1:
-        wb_trade.save(out_trade)
-        files_created.append(out_trade)
-        
-    # Сохраняем рассписку всегда
-    wb_receipt.save(out_receipt)
-    files_created.append(out_receipt)
+
+    # Сохраняем файлы только если НЕ dry_run режим
+    if not dry_run:
+        if curr_import > 1:
+            wb_import.save(out_import)
+            files_created.append(out_import)
+        if curr_trade > 1:
+            wb_trade.save(out_trade)
+            files_created.append(out_trade)
+
+        # Сохраняем рассписку всегда
+        wb_receipt.save(out_receipt)
+        files_created.append(out_receipt)
+    else:
+        log_callback("\n[ℹ] РЕЖИМ ПРОВЕРКИ: Файлы не были сохранены.")
+        if curr_import > 1:
+            files_created.append(f"(предпросмотр) {os.path.basename(out_import)}")
+        if curr_trade > 1:
+            files_created.append(f"(предпросмотр) {os.path.basename(out_trade)}")
+        files_created.append(f"(предпросмотр) {os.path.basename(out_receipt)}")
 
     log_callback("\n============================================================")
     log_callback("ФИНАЛЬНЫЙ ОТЧЕТ ПО РАСХОЖДЕНИЯМ:")
@@ -377,7 +433,7 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
     if duplicate_summary:
         log_callback(f"\n[!] ОБНАРУЖЕНЫ СОВПАДЕНИЯ (ДУБЛИКАТЫ) КОДОВ МАРКИРОВКИ:")
         log_callback("    *Все типы дубликатов были полностью исключены из итоговых Excel-файлов.*")
-    
+
     log_callback("\n============================================================")
     log_callback("СВОДНАЯ ТАБЛИЦА РАСПРЕДЕЛЕНИЯ АРТИКУЛОВ:")
     log_callback("============================================================")
@@ -405,7 +461,7 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
 # =================================================================
 # РЕЖИМ 2: БЫСТРАЯ ОЧИСТКА (Форматтер / Клинер)
 # =================================================================
-def process_cleaner_mode(c_folder, out_dir, log_callback, progress_callback, stats_callback, remove_brackets=False):
+def process_cleaner_mode(c_folder, out_dir, log_callback, progress_callback, stats_callback, remove_brackets=False, invoice_prefix="", cancel_callback=None, dry_run=False, file_callback=None):
     all_files = [f for f in os.listdir(c_folder) if f.endswith(('.xlsx', '.xls')) and not f.startswith('~')]
     trade_files = [f for f in all_files if 'трейд' in f.lower() and 'clean' not in f.lower() and 'декларации' not in f.lower()]
     import_files = [f for f in all_files if 'импорт' in f.lower() and 'clean' not in f.lower() and 'декларации' not in f.lower()]
@@ -426,8 +482,20 @@ def process_cleaner_mode(c_folder, out_dir, log_callback, progress_callback, sta
     rimma_dir = os.path.join(out_dir, "Для декларации")
     os.makedirs(rimma_dir, exist_ok=True)
 
+    # ДОБАВЛЕНО: Префикс из GUI
+    prefix = f"{invoice_prefix.strip()} " if invoice_prefix.strip() else ""
+
     # ------------------ ОБРАБОТКА ТРЕЙДА ------------------
     for f_name in trade_files:
+        # Проверка на отмену операции
+        if cancel_callback and cancel_callback():
+            log_callback("[⚠] Операция отменена пользователем.")
+            return
+
+        # Уведомляем о текущем файле
+        if file_callback:
+            file_callback(f_name)
+
         log_callback(f"⏳ Обработка ТРЕЙД: {f_name}")
         file_path = os.path.join(c_folder, f_name)
         df = pd.read_excel(file_path, header=None)
@@ -474,9 +542,18 @@ def process_cleaner_mode(c_folder, out_dir, log_callback, progress_callback, sta
                 ws_pack[f"A{idx}"] = code
             ws_pack.column_dimensions['A'].width = 30
 
-        out_name = f"CLEAN_{f_name}"
-        wb.save(os.path.join(out_dir, out_name))
-        log_callback(f"  ✅ Создан: {out_name} (Маркировок: {len(mark_codes)}, Упаковок: {len(pack_codes)} | Удалено дублей: {local_dups})")
+        # ДОБАВЛЕНО: убираем дублирование инвойса из имени
+        base_f_name = f_name
+        if invoice_prefix.strip() and base_f_name.startswith(invoice_prefix.strip()):
+            base_f_name = base_f_name[len(invoice_prefix.strip()):].lstrip(" _-")
+
+        out_name = f"{prefix}CLEAN_{base_f_name}"
+
+        if not dry_run:
+            wb.save(os.path.join(out_dir, out_name))
+            log_callback(f"  ✅ Создан: {out_name} (Маркировок: {len(mark_codes)}, Упаковок: {len(pack_codes)} | Удалено дублей: {local_dups})")
+        else:
+            log_callback(f"  🔍 Проверка: {out_name} (Маркировок: {len(mark_codes)}, Упаковок: {len(pack_codes)} | Удалено дублей: {local_dups})")
 
         # --- ФАЙЛ ДЛЯ РИММЫ (УРАЛ ТРЕЙД) ---
         wb_rimma = Workbook()
@@ -500,11 +577,16 @@ def process_cleaner_mode(c_folder, out_dir, log_callback, progress_callback, sta
             max_length = max(len(str(cell.value or '')) for cell in col)
             ws_rimma.column_dimensions[col[0].column_letter].width = min(max_length + 5, 50)
 
-        base_name = os.path.splitext(f_name)[0]
-        out_rimma = f"{base_name}_для_декларации.xlsx"
+        # ДОБАВЛЕНО: Префикс для файла декларации
+        base_name = os.path.splitext(base_f_name)[0]
+        out_rimma = f"{prefix}{base_name}_для_декларации.xlsx"
+
         # Сохраняем в отдельную папку!
-        wb_rimma.save(os.path.join(rimma_dir, out_rimma))
-        log_callback(f"  📁 Создан: {out_rimma} (В папке 'Для декларации')\n")
+        if not dry_run:
+            wb_rimma.save(os.path.join(rimma_dir, out_rimma))
+            log_callback(f"  📁 Создан: {out_rimma} (В папке 'Для декларации')\n")
+        else:
+            log_callback(f"  🔍 Проверка: {out_rimma} (В папке 'Для декларации')\n")
         
         processed_count += 1
         progress_callback(processed_count, total_files)
@@ -513,6 +595,15 @@ def process_cleaner_mode(c_folder, out_dir, log_callback, progress_callback, sta
 
     # ------------------ ОБРАБОТКА ИМПОРТА ------------------
     for f_name in import_files:
+        # Проверка на отмену операции
+        if cancel_callback and cancel_callback():
+            log_callback("[⚠] Операция отменена пользователем.")
+            return
+
+        # Уведомляем о текущем файле
+        if file_callback:
+            file_callback(f_name)
+
         log_callback(f"⏳ Обработка ИМПОРТ: {f_name}")
         file_path = os.path.join(c_folder, f_name)
         df = pd.read_excel(file_path, header=None)
@@ -545,9 +636,18 @@ def process_cleaner_mode(c_folder, out_dir, log_callback, progress_callback, sta
             ws_mark[f"A{idx}"] = code
         ws_mark.column_dimensions['A'].width = 45
 
-        out_name = f"CLEAN_{f_name}"
-        wb.save(os.path.join(out_dir, out_name))
-        log_callback(f"  ✅ Создан: {out_name} (Маркировок: {len(mark_codes)} | Удалено дублей: {local_dups})")
+        # ДОБАВЛЕНО: убираем дублирование инвойса из имени
+        base_f_name = f_name
+        if invoice_prefix.strip() and base_f_name.startswith(invoice_prefix.strip()):
+            base_f_name = base_f_name[len(invoice_prefix.strip()):].lstrip(" _-")
+
+        out_name = f"{prefix}CLEAN_{base_f_name}"
+
+        if not dry_run:
+            wb.save(os.path.join(out_dir, out_name))
+            log_callback(f"  ✅ Создан: {out_name} (Маркировок: {len(mark_codes)} | Удалено дублей: {local_dups})")
+        else:
+            log_callback(f"  🔍 Проверка: {out_name} (Маркировок: {len(mark_codes)} | Удалено дублей: {local_dups})")
 
         # --- ФАЙЛ ДЛЯ РИММЫ (УРАЛ ИМПОРТ) ---
         wb_rimma = Workbook()
@@ -590,7 +690,7 @@ def process_cleaner_mode(c_folder, out_dir, log_callback, progress_callback, sta
             if code_val:
                 if is_first_code:
                     ws_rimma.append([
-                        code_val, current_art, current_name, current_desc,
+                        code_val, current_art, current_name, current_desc, 
                         current_places, current_qty, current_unit
                     ])
                     is_first_code = False
@@ -603,11 +703,16 @@ def process_cleaner_mode(c_folder, out_dir, log_callback, progress_callback, sta
             max_length = max(len(str(cell.value or '')) for cell in col)
             ws_rimma.column_dimensions[col[0].column_letter].width = min(max_length + 5, 50)
 
-        base_name = os.path.splitext(f_name)[0]
-        out_rimma = f"{base_name}_для_декларации.xlsx"
+        # ДОБАВЛЕНО: Префикс для файла декларации
+        base_name = os.path.splitext(base_f_name)[0]
+        out_rimma = f"{prefix}{base_name}_для_декларации.xlsx"
+
         # Сохраняем в отдельную папку!
-        wb_rimma.save(os.path.join(rimma_dir, out_rimma))
-        log_callback(f"  📁 Создан: {out_rimma} (В папке 'Для декларации')\n")
+        if not dry_run:
+            wb_rimma.save(os.path.join(rimma_dir, out_rimma))
+            log_callback(f"  📁 Создан: {out_rimma} (В папке 'Для декларации')\n")
+        else:
+            log_callback(f"  🔍 Проверка: {out_rimma} (В папке 'Для декларации')\n")
 
         processed_count += 1
         progress_callback(processed_count, total_files)
