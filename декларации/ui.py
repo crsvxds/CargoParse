@@ -7,13 +7,13 @@ import threading
 import subprocess
 
 try:
-    from tkinterdnd2 import DND_FILES, TkinterDnD
+    from tkinterdnd2 import DND_FILES, TkinterDnD  # type: ignore
     HAS_DND = True
 except ImportError:
     HAS_DND = False
 
 from core import process_customs_data, process_cleaner_mode
-from config import Config
+from config import Config, BASE_DIR
 
 
 class ToolTip:
@@ -107,6 +107,10 @@ class CustomsApp:
         self.setup_hotkeys()
         self.setup_drag_drop()
 
+        # Автосохранение префикса инвойса при изменении
+        self.invoice_prefix.trace_add("write", lambda *args: self.config.update_invoice_prefix(self.invoice_prefix.get()))
+
+
         # Применяем тему при старте
         if self.dark_theme_var.get():
             self.apply_dark_theme()
@@ -117,6 +121,49 @@ class CustomsApp:
                 os.makedirs(self.output_dir.get(), exist_ok=True)
             except:
                 pass
+
+    def browse_articles_file(self):
+        """Выбор файла артикулов с сохранением в конфиг"""
+        initial_dir = os.path.dirname(self.articles_path.get()) if self.articles_path.get() else os.path.expanduser("~")
+        filepath = filedialog.askopenfilename(
+            title="Выберите файл articles.txt",
+            initialdir=initial_dir,
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+        )
+        if filepath:
+            self.articles_path.set(filepath)
+            self.config.update_articles_path(filepath)
+            self.log(f"✓ Файл артикулов: {filepath}")
+
+    def browse_codes_dir(self):
+        """Выбор папки с кодами с сохранением в конфиг"""
+        dirpath = filedialog.askdirectory(
+            title="Выберите папку с кодами",
+            initialdir=self.codes_dir.get() or BASE_DIR
+        )
+        if dirpath:
+            self.codes_dir.set(dirpath)
+            self.config.update_codes_dir(dirpath)
+            self.log(f"✓ Папка с кодами: {dirpath}")
+
+    def browse_output_dir(self):
+        """Выбор папки вывода с сохранением в конфиг"""
+        dirpath = filedialog.askdirectory(
+            title="Выберите папку для результатов",
+            initialdir=self.output_dir.get() or BASE_DIR
+        )
+        if dirpath:
+            self.output_dir.set(dirpath)
+            self.config.update_output_dir(dirpath)
+            # Создаем папку если не существует
+            if not os.path.exists(dirpath):
+                try:
+                    os.makedirs(dirpath, exist_ok=True)
+                    self.log(f"✓ Создана папка результатов: {dirpath}")
+                except Exception as e:
+                    self.log(f"⚠ Не удалось создать папку: {e}")
+            else:
+                self.log(f"✓ Папка результатов: {dirpath}")
 
     def setup_styles(self):
         self.style = ttk.Style()
@@ -214,10 +261,17 @@ class CustomsApp:
         self.root.bind('<Control-e>', lambda e: self.open_articles_editor())
         self.root.bind('<Control-E>', lambda e: self.open_articles_editor())
 
+        # Ctrl+T - Копировать сводную таблицу
+        self.root.bind('<Control-t>', lambda e: self.copy_summary_table())
+        self.root.bind('<Control-T>', lambda e: self.copy_summary_table())
+
         # Escape - Отмена операции
         self.root.bind('<Escape>', lambda e: self.cancel_operation())
 
-        self.log("[ℹ] Горячие клавиши: F5-Запуск | Ctrl+S-Сохранить | Ctrl+O-Открыть результаты | Ctrl+E-Редактор | Ctrl+F-Поиск | Esc-Отмена")
+        # Универсальный обработчик для Ctrl+C на любой раскладке
+        self.root.bind('<Control-KeyPress>', self.handle_ctrl_key)
+
+        self.log("[ℹ] Горячие клавиши: F5-Запуск | Ctrl+S-Сохранить | Ctrl+O-Открыть результаты | Ctrl+E-Редактор | Ctrl+T-Копировать сводную | Ctrl+F-Поиск | Esc-Отмена")
 
     def setup_drag_drop(self):
         """Настройка drag-and-drop для полей ввода"""
@@ -246,6 +300,9 @@ class CustomsApp:
         if os.path.isfile(file_path):
             target_var.set(file_path)
             self.log(f"[ℹ] Файл добавлен: {os.path.basename(file_path)}")
+            # Сохраняем в конфиг
+            if target_var == self.articles_path:
+                self.config.update_articles_path(file_path)
 
     def on_drop_folder(self, event, target_var):
         """Обработчик drop для папок"""
@@ -253,10 +310,20 @@ class CustomsApp:
         if os.path.isdir(folder_path):
             target_var.set(folder_path)
             self.log(f"[ℹ] Папка добавлена: {os.path.basename(folder_path)}")
+            # Сохраняем в конфиг
+            if target_var == self.codes_dir:
+                self.config.update_codes_dir(folder_path)
+            elif target_var == self.output_dir:
+                self.config.update_output_dir(folder_path)
         elif os.path.isfile(folder_path):
             folder_path = os.path.dirname(folder_path)
             target_var.set(folder_path)
             self.log(f"[ℹ] Папка добавлена: {os.path.basename(folder_path)}")
+            # Сохраняем в конфиг
+            if target_var == self.codes_dir:
+                self.config.update_codes_dir(folder_path)
+            elif target_var == self.output_dir:
+                self.config.update_output_dir(folder_path)
 
     def open_articles_editor(self):
         """Открывает встроенный редактор для articles.txt"""
@@ -368,8 +435,12 @@ class CustomsApp:
                 content = text_editor.get("1.0", tk.END).rstrip('\n')
                 with open(articles_file, "w", encoding="utf-8") as f:
                     f.write(content)
+
+                # Подсчитываем количество строк
+                line_count = len(content.split('\n')) if content else 0
+
                 messagebox.showinfo("Успешно", f"Файл сохранен:\n{articles_file}")
-                self.log(f"[✓] Файл articles.txt сохранен: {line_count - 1} строк")
+                self.log(f"[✓] Файл articles.txt сохранен: {line_count} строк")
             except Exception as e:
                 messagebox.showerror("Ошибка сохранения", f"Не удалось сохранить файл:\n{e}")
 
@@ -458,7 +529,7 @@ class CustomsApp:
         art_btn_frame = ttk.Frame(self.path_frame)
         art_btn_frame.grid(row=1, column=2, pady=3, padx=(4, 0))
 
-        self.btn_art = ttk.Button(art_btn_frame, text="Обзор...", width=10, command=lambda: self.articles_path.set(filedialog.askopenfilename(initialdir=os.path.dirname(self.articles_path.get()) if self.articles_path.get() else os.path.expanduser("~")) or self.articles_path.get()))
+        self.btn_art = ttk.Button(art_btn_frame, text="Обзор...", width=10, command=self.browse_articles_file)
         self.btn_art.pack(side=tk.LEFT, padx=(0, 2))
 
         self.btn_edit_art = ttk.Button(art_btn_frame, text="📝", width=3, command=self.open_articles_editor)
@@ -470,7 +541,7 @@ class CustomsApp:
         self.lbl_source.grid(row=2, column=0, sticky=tk.W, pady=3, padx=(0, 8))
         self.ent_codes = ttk.Entry(self.path_frame, textvariable=self.codes_dir)
         self.ent_codes.grid(row=2, column=1, sticky=tk.EW, pady=3, padx=4)
-        self.btn_codes = ttk.Button(self.path_frame, text="Обзор...", width=10, command=lambda: self.codes_dir.set(filedialog.askdirectory(initialdir=BASE_DIR) or self.codes_dir.get()))
+        self.btn_codes = ttk.Button(self.path_frame, text="Обзор...", width=10, command=self.browse_codes_dir)
         self.btn_codes.grid(row=2, column=2, pady=3, padx=(4, 0))
 
         # Строка 3: Папка вывода
@@ -478,8 +549,16 @@ class CustomsApp:
         self.lbl_out.grid(row=3, column=0, sticky=tk.W, pady=3, padx=(0, 8))
         self.ent_out = ttk.Entry(self.path_frame, textvariable=self.output_dir)
         self.ent_out.grid(row=3, column=1, sticky=tk.EW, pady=3, padx=4)
-        self.btn_out = ttk.Button(self.path_frame, text="Обзор...", width=10, command=lambda: self.output_dir.set(filedialog.askdirectory(initialdir=BASE_DIR) or self.output_dir.get()))
-        self.btn_out.grid(row=3, column=2, pady=3, padx=(4, 0))
+
+        out_btn_frame = ttk.Frame(self.path_frame)
+        out_btn_frame.grid(row=3, column=2, pady=3, padx=(4, 0))
+
+        self.btn_out = ttk.Button(out_btn_frame, text="Обзор...", width=10, command=self.browse_output_dir)
+        self.btn_out.pack(side=tk.LEFT, padx=(0, 2))
+
+        self.btn_clear_out = ttk.Button(out_btn_frame, text="🗑", width=3, command=self.clear_output_folder)
+        self.btn_clear_out.pack(side=tk.LEFT)
+        ToolTip(self.btn_clear_out, "Очистить папку результатов")
 
         # Строка 4: Инвойс
         self.lbl_inv = ttk.Label(self.path_frame, text="Номер инвойса (префикс):")
@@ -524,6 +603,16 @@ class CustomsApp:
 
         self.log_text.bind("<Key>", block_input)
 
+        # Добавляем обработку Ctrl+C для русской раскладки (код клавиши 67)
+        def handle_log_copy(event):
+            # Если нажат Ctrl и код клавиши = 67 (клавиша C на любой раскладке)
+            if (event.state & 0x4) and event.keycode == 67:
+                self.copy_from_log()
+                return "break"
+
+        self.log_text.bind("<KeyPress>", handle_log_copy)
+
+
         # 5. ИНДИКАТОРЫ ПРОГРЕССА
         progress_frame = ttk.Frame(main_frame)
         progress_frame.pack(fill=tk.X, pady=(0, 6))
@@ -560,6 +649,10 @@ class CustomsApp:
 
         self.save_btn = tk.Button(btn_frame, text="💾 Сохранить лог", font=("Segoe UI", 9), bg="#e2e8f0", fg=self.text_main, borderwidth=0, activebackground="#cbd5e1", command=self.save_log)
         self.save_btn.pack(side=tk.LEFT, padx=10, ipadx=8, ipady=4)
+
+        self.copy_summary_btn = tk.Button(btn_frame, text="📋 Копировать сводную", font=("Segoe UI", 9), bg="#e2e8f0", fg=self.text_main, borderwidth=0, activebackground="#cbd5e1", command=self.copy_summary_table)
+        self.copy_summary_btn.pack(side=tk.LEFT, padx=(0, 10), ipadx=8, ipady=4)
+        ToolTip(self.copy_summary_btn, "Копировать в буфер обмена только сводную таблицу распределения артикулов")
 
         ttk.Checkbutton(btn_frame, text="Открыть папку результатов", variable=self.auto_open).pack(side=tk.LEFT, padx=10)
 
@@ -673,6 +766,68 @@ class CustomsApp:
             self.dash_blocks[1].configure(text="Успешно (OK)")
             self.dash_frame.configure(text=" Панель мониторинга ")
 
+    def handle_ctrl_key(self, event):
+        """Обработчик Ctrl+клавиша для поддержки русской раскладки"""
+        # Проверяем Ctrl+C на любой раскладке (код клавиши C = 67)
+        if event.keycode == 67:  # C на клавиатуре
+            self.copy_from_log()
+            return "break"
+
+    def copy_from_log(self):
+        """Копирует выделенный текст из лога в буфер обмена"""
+        try:
+            selected_text = self.log_text.get(tk.SEL_FIRST, tk.SEL_LAST)
+            if selected_text:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(selected_text)
+        except tk.TclError:
+            # Нет выделенного текста
+            pass
+
+    def copy_summary_table(self):
+        """Копирует в буфер обмена только сводную таблицу распределения артикулов"""
+        content = self.log_text.get("1.0", tk.END)
+        lines = content.split("\n")
+
+        summary_lines = []
+        in_summary = False
+
+        for line in lines:
+            # Начало блока сводной таблицы
+            if "СВОДНАЯ ТАБЛИЦА РАСПРЕДЕЛЕНИЯ АРТИКУЛОВ" in line:
+                in_summary = True
+                summary_lines.append("СВОДНАЯ ТАБЛИЦА РАСПРЕДЕЛЕНИЯ АРТИКУЛОВ:")
+                continue
+
+            if in_summary:
+                # Конец блока — пустая строка после строки с разделителем "===="
+                if line.startswith("====") and len(summary_lines) > 3:
+                    break
+                # Пропускаем разделитель "---" под заголовком
+                if line.strip().startswith("---"):
+                    continue
+                summary_lines.append(line.rstrip())
+
+        # Убираем пустые строки в конце
+        while summary_lines and not summary_lines[-1].strip():
+            summary_lines.pop()
+
+        if len(summary_lines) <= 1:
+            messagebox.showwarning(
+                "Нет данных",
+                "Сводная таблица не найдена в логе.\n\n"
+                "Сначала запустите обработку (F5), чтобы таблица сформировалась."
+            )
+            return
+
+        result = "\n".join(summary_lines)
+
+        self.root.clipboard_clear()
+        self.root.clipboard_append(result)
+        self.root.update_idletasks()
+
+        self.log(f"[✓] Сводная таблица скопирована в буфер обмена ({len(summary_lines) - 1} строк)")
+
     def save_log(self):
         content = self.log_text.get("1.0", tk.END).strip()
         if not content:
@@ -703,6 +858,59 @@ class CustomsApp:
             self.log(f"[ℹ] Открыта папка: {output_path}")
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось открыть папку:\n{e}")
+
+    def clear_output_folder(self):
+        """Очищает папку с результатами (удаляет всё содержимое включая подпапки)"""
+        output_path = self.output_dir.get().strip()
+        if not output_path:
+            messagebox.showwarning("Папка не указана", "Укажите папку для результатов")
+            return
+
+        if not os.path.exists(output_path):
+            messagebox.showwarning("Папка не найдена", f"Папка не существует:\n{output_path}")
+            return
+
+        # Подтверждение удаления
+        result = messagebox.askyesno(
+            "Подтверждение очистки",
+            f"Вы уверены, что хотите удалить ВСЁ содержимое из папки:\n{output_path}\n\n"
+            "Будут удалены все файлы и подпапки!\n\nЭто действие нельзя отменить!",
+            icon='warning'
+        )
+
+        if not result:
+            return
+
+        try:
+            import shutil
+            # Удаляем всё содержимое папки
+            deleted_files = 0
+            deleted_dirs = 0
+
+            for item in os.listdir(output_path):
+                item_path = os.path.join(output_path, item)
+                try:
+                    if os.path.isfile(item_path):
+                        os.unlink(item_path)
+                        deleted_files += 1
+                    elif os.path.isdir(item_path):
+                        shutil.rmtree(item_path)
+                        deleted_dirs += 1
+                except Exception as e:
+                    self.log(f"[❌] Не удалось удалить {item}: {e}")
+
+            if deleted_files > 0 or deleted_dirs > 0:
+                msg = f"Удалено файлов: {deleted_files}, папок: {deleted_dirs}"
+                self.log(f"[✓] Папка очищена. {msg}")
+                messagebox.showinfo("Успешно", msg)
+            else:
+                self.log(f"[ℹ] Папка уже пуста")
+                messagebox.showinfo("Информация", "Папка уже пуста")
+
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось очистить папку:\n{e}")
+            self.log(f"[❌] Ошибка очистки папки: {e}")
+
 
     def open_log_search(self):
         """Открывает окно поиска по логу"""

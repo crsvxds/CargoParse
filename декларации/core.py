@@ -92,15 +92,15 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
     ws_trade.title = "УралТрейд"
     curr_trade = 1
 
-    # Инициализация файла-рассписки
-    wb_receipt = Workbook()
-    ws_receipt = wb_receipt.active
-    ws_receipt.title = "Рассписка"
-    ws_receipt.append(["Артикул", "План (шт)", "Факт (шт)", "Принадлежность"])
+    # Инициализация файла-рассписки (отключено)
+    # wb_receipt = Workbook()
+    # ws_receipt = wb_receipt.active
+    # ws_receipt.title = "Рассписка"
+    # ws_receipt.append(["Артикул", "План (шт)", "Факт (шт)", "Принадлежность"])
 
     not_found_articles = []
     mismatched_articles = []
-    duplicate_summary = {} 
+    duplicate_summary = {}
     article_routing_summary = []
     global_seen_codes = {}
 
@@ -199,10 +199,10 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
             not_found_articles.append(article)
             article_routing_summary.append((article, "❌ Файлы не найдены"))
             log_callback(f"[ПРОПУСК] ... Артикул {article}: Файлы декларации НЕ найдены (План: {quantity_int} шт)")
-            
-            # Запись в рассписку (когда нет файлов)
-            ws_receipt.append([article, quantity_int, 0, "НЕТ ФАЙЛОВ"])
-            
+
+            # Запись в рассписку (отключено)
+            # ws_receipt.append([article, quantity_int, 0, "НЕТ ФАЙЛОВ"])
+
             bad_counter += 1
             stats_callback("bad", bad_counter)
             progress_callback(index + 1, total_articles)
@@ -301,27 +301,58 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
         actual_packages_count = len(actual_packages_set)
 
         status_parts = []
+        diff_parts = []  # Для вывода расхождений
+
         if trade_groups and import_groups:
             type_label = "Смешанный (Трейд+Импорт)"
-            status_parts.append(f"Штук: план {quantity_int}, факт {total_codes_count} (Трейд: {trade_codes_count}, Импорт: {import_codes_count})")
+            status_parts.append(f"Штук: факт {total_codes_count}, план {quantity_int} (Трейд: {trade_codes_count}, Импорт: {import_codes_count})")
             receipt_firm = f"СМЕШАННЫЙ (Трейд: {trade_codes_count}, Импорт: {import_codes_count})"
+
+            # Расхождение по штукам
+            pieces_diff = total_codes_count - quantity_int
+            if pieces_diff != 0:
+                sign = "+" if pieces_diff > 0 else ""
+                diff_parts.append(f"Штук: {sign}{pieces_diff}")
+
             if check_boxes and cargo_places_int > 0:
-                status_parts.append(f"Коробок(Трейд): план {cargo_places_int}, факт {actual_packages_count}")
+                status_parts.append(f"Коробок(Трейд): факт {actual_packages_count}, план {cargo_places_int}")
+                boxes_diff = actual_packages_count - cargo_places_int
+                if boxes_diff != 0:
+                    sign = "+" if boxes_diff > 0 else ""
+                    diff_parts.append(f"Коробок: {sign}{boxes_diff}")
         elif trade_groups:
             type_label = "УралТрейд"
-            status_parts.append(f"Штук: план {quantity_int}, факт {trade_codes_count}")
+            status_parts.append(f"Штук: факт {trade_codes_count}, план {quantity_int}")
             receipt_firm = "УРАЛТРЕЙД"
+
+            # Расхождение по штукам
+            pieces_diff = trade_codes_count - quantity_int
+            if pieces_diff != 0:
+                sign = "+" if pieces_diff > 0 else ""
+                diff_parts.append(f"Штук: {sign}{pieces_diff}")
+
             if check_boxes and cargo_places_int > 0:
-                status_parts.append(f"Коробок: план {cargo_places_int}, факт {actual_packages_count}")
+                status_parts.append(f"Коробок: факт {actual_packages_count}, план {cargo_places_int}")
+                boxes_diff = actual_packages_count - cargo_places_int
+                if boxes_diff != 0:
+                    sign = "+" if boxes_diff > 0 else ""
+                    diff_parts.append(f"Коробок: {sign}{boxes_diff}")
         else:
             type_label = "УралИмпорт"
-            status_parts.append(f"Штук: план {quantity_int}, факт {import_codes_count}")
+            status_parts.append(f"Штук: факт {import_codes_count}, план {quantity_int}")
             receipt_firm = "УРАЛИМПОРТ"
 
-        diff_str = " | ".join(status_parts)
+            # Расхождение по штукам
+            pieces_diff = import_codes_count - quantity_int
+            if pieces_diff != 0:
+                sign = "+" if pieces_diff > 0 else ""
+                diff_parts.append(f"Штук: {sign}{pieces_diff}")
 
-        # Запись в файл-рассписку
-        ws_receipt.append([article, quantity_int, total_codes_count, receipt_firm])
+        diff_str = " | ".join(status_parts)
+        diff_summary = " | ".join(diff_parts) if diff_parts else ""
+
+        # Запись в файл-рассписку (отключено)
+        # ws_receipt.append([article, quantity_int, total_codes_count, receipt_firm])
 
         if check_boxes and cargo_places_int > 0 and trade_groups:
             is_mismatch = (total_codes_count != quantity_int) or (actual_packages_count != cargo_places_int)
@@ -329,8 +360,13 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
             is_mismatch = (total_codes_count != quantity_int)
 
         if is_mismatch:
-            log_callback(f"[{type_label}] Артикул {article}: РАСХОЖДЕНИЕ! ({diff_str}). Но данные добавлены.")
-            article_routing_summary.append((article, f"⚠️ Расхождение ({diff_str})"))
+            # Формируем сообщение с расхождением
+            mismatch_msg = f"⚠️ Расхождение ({diff_str})"
+            if diff_summary:
+                mismatch_msg += f" | Разница: {diff_summary}"
+
+            log_callback(f"[{type_label}] Артикул {article}: РАСХОЖДЕНИЕ! ({diff_str}). Разница: {diff_summary}. Но данные добавлены.")
+            article_routing_summary.append((article, mismatch_msg))
             mismatched_articles.append({
                 "article": article, "expected": quantity_int, "actual": total_codes_count,
                 "diff": abs(quantity_int - total_codes_count), "status": "Расхождение", "files": ", ".join(files_loaded_names)
@@ -385,7 +421,7 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
         progress_callback(index + 1, total_articles)
 
     # Выравнивание ширины столбцов
-    for work_sheet in [ws_import, ws_trade, ws_receipt]:
+    for work_sheet in [ws_import, ws_trade]:  # Убрали ws_receipt
         for col in work_sheet.columns:
             max_length = max(len(str(cell.value or '')) for cell in col)
             column = col[0].column_letter
@@ -397,7 +433,7 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
 
     out_import = os.path.join(out_dir, f"{prefix}УралИмпорт.xlsx")
     out_trade = os.path.join(out_dir, f"{prefix}УралТрейд.xlsx")
-    out_receipt = os.path.join(out_dir, f"{prefix}рассписка.xlsx")
+    # out_receipt = os.path.join(out_dir, f"{prefix}рассписка.xlsx")  # Отключено
 
     files_created = []
 
@@ -410,16 +446,17 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
             wb_trade.save(out_trade)
             files_created.append(out_trade)
 
-        # Сохраняем рассписку всегда
-        wb_receipt.save(out_receipt)
-        files_created.append(out_receipt)
+        # Сохраняем рассписку всегда (ОТКЛЮЧЕНО)
+        # wb_receipt.save(out_receipt)
+        # files_created.append(out_receipt)
     else:
         log_callback("\n[ℹ] РЕЖИМ ПРОВЕРКИ: Файлы не были сохранены.")
         if curr_import > 1:
             files_created.append(f"(предпросмотр) {os.path.basename(out_import)}")
         if curr_trade > 1:
             files_created.append(f"(предпросмотр) {os.path.basename(out_trade)}")
-        files_created.append(f"(предпросмотр) {os.path.basename(out_receipt)}")
+        # files_created.append(f"(предпросмотр) {os.path.basename(out_receipt)}")  # Отключено
+
 
     log_callback("\n============================================================")
     log_callback("ФИНАЛЬНЫЙ ОТЧЕТ ПО РАСХОЖДЕНИЯМ:")

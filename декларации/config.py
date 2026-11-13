@@ -1,6 +1,9 @@
 import os
 import json
 
+# Базовая директория проекта
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 class Config:
     def __init__(self):
         self.config_file = os.path.join(os.path.dirname(__file__), "config.json")
@@ -70,3 +73,23 @@ class Config:
     def get_current_profile_data(self):
         current = self.config.get("current_profile", "default")
         return self.get_profile(current)
+
+    def update_articles_path(self, path):
+        """Сохранить путь к файлу артикулов"""
+        self.config["last_articles_path"] = path
+        self.save_config()
+
+    def update_codes_dir(self, path):
+        """Сохранить путь к папке с кодами"""
+        self.config["last_codes_dir"] = path
+        self.save_config()
+
+    def update_output_dir(self, path):
+        """Сохранить путь к папке вывода"""
+        self.config["last_output_dir"] = path
+        self.save_config()
+
+    def update_invoice_prefix(self, prefix):
+        """Сохранить префикс инвойса"""
+        self.config["last_invoice_prefix"] = prefix
+        self.save_config()

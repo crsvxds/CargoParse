@@ -1,6 +1,6 @@
 import tkinter as tk
 try:
-    from tkinterdnd2 import TkinterDnD
+    from tkinterdnd2 import TkinterDnD  # type: ignore
     root = TkinterDnD.Tk()
 except ImportError:
     # Если tkinterdnd2 не установлен, используем обычный Tk
