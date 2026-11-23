@@ -22,16 +22,13 @@ def extract_codes_by_pattern(df, remove_brackets=False):
     Ищ��т коды вида (01)...числа...(21)...буквы... во ВСЕХ столбцах.
     Возвращает список найденных кодов (для импорта) или список (код_маркировки, код_упаковки) для трейда.
     """
-    # Паттерн: (01) за которым идут цифры, затем (21) за которым идут буквы/цифры
-    code_pattern = re.compile(r'\(01\)\d+\(21\)[A-Za-z0-9]+')
+    # Паттерн: (01) за которым идут цифры, затем (21) за которым идут ЛЮБЫЕ символы кроме пробелов и скобок
+    code_pattern = re.compile(r'\(01\)\d+\(21\)[^\s()]+')
 
     found_codes = []
 
     # Проходим по всем строкам и столбцам
     for row_idx in range(len(df)):
-        row_has_code = False
-        last_pack_code = "БЕЗ_КОДА_УПАКОВКИ"
-
         for col_idx in range(df.shape[1]):
             cell_val = df.iloc[row_idx, col_idx]
             if pd.isna(cell_val):
@@ -54,11 +51,6 @@ def extract_codes_by_pattern(df, remove_brackets=False):
                     continue
 
                 found_codes.append(cleaned_code)
-                row_has_code = True
-
-        # Для Трейда: если нашли код маркировки, нужно найти код упаковки в этой же строке
-        # Код упаковки тоже соответствует паттерну, но обычно в другом столбце
-        # Пока возвращаем просто все найденные коды
 
     return found_codes
 
@@ -67,7 +59,7 @@ def extract_trade_codes_by_pattern(df, remove_brackets=False):
     Специальная версия для Трейд файлов: возвращает пары (код_маркировки, код_упаковки).
     Коды упаковки ищем отдельно в правых столбцах (обычно столбец 3 или 8).
     """
-    code_pattern = re.compile(r'\(01\)\d+\(21\)[A-Za-z0-9]+')
+    code_pattern = re.compile(r'\(01\)\d+\(21\)[^\s()]+')
 
     result = []
 
