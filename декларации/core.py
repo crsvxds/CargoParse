@@ -16,6 +16,118 @@ def safe_str(val):
         return str(int(val))
     return str(val).strip()
 
+# --- НОВАЯ ФУНКЦИЯ: ПОИСК КОДОВ ПО ПАТТЕРНУ ---
+def extract_codes_by_pattern(df, remove_brackets=False):
+    """
+    Ищ��т коды вида (01)...числа...(21)...буквы... во ВСЕХ столбцах.
+    Возвращает список найденных кодов (для импорта) или список (код_маркировки, код_упаковки) для трейда.
+    """
+    # Паттерн: (01) за которым идут цифры, затем (21) за которым идут буквы/цифры
+    code_pattern = re.compile(r'\(01\)\d+\(21\)[A-Za-z0-9]+')
+
+    found_codes = []
+
+    # Проходим по всем строкам и столбцам
+    for row_idx in range(len(df)):
+        row_has_code = False
+        last_pack_code = "БЕЗ_КОДА_УПАКОВКИ"
+
+        for col_idx in range(df.shape[1]):
+            cell_val = df.iloc[row_idx, col_idx]
+            if pd.isna(cell_val):
+                continue
+
+            cell_str = safe_str(cell_val)
+            if not cell_str:
+                continue
+
+            # Ищем все совпадения паттерна в ячейке
+            matches = code_pattern.findall(cell_str)
+
+            for match in matches:
+                cleaned_code = match
+                if remove_brackets:
+                    cleaned_code = remove_specific_brackets(match)
+
+                # Пропускаем коды начинающиеся с (00) или 00
+                if cleaned_code.startswith("(00)") or cleaned_code.startswith("00"):
+                    continue
+
+                found_codes.append(cleaned_code)
+                row_has_code = True
+
+        # Для Трейда: если нашли код маркировки, нужно найти код упаковки в этой же строке
+        # Код упаковки тоже соответствует паттерну, но обычно в другом столбце
+        # Пока возвращаем просто все найденные коды
+
+    return found_codes
+
+def extract_trade_codes_by_pattern(df, remove_brackets=False):
+    """
+    Специальная версия для Трейд файлов: возвращает пары (код_маркировки, код_упаковки).
+    Коды упаковки ищем отдельно в правых столбцах (обычно столбец 3 или 8).
+    """
+    code_pattern = re.compile(r'\(01\)\d+\(21\)[A-Za-z0-9]+')
+
+    result = []
+
+    for row_idx in range(len(df)):
+        # Ищем код маркировки в любом столбце
+        mark_code = None
+        for col_idx in range(df.shape[1]):
+            cell_val = df.iloc[row_idx, col_idx]
+            if pd.isna(cell_val):
+                continue
+            cell_str = safe_str(cell_val)
+            matches = code_pattern.findall(cell_str)
+            if matches:
+                mark_code = matches[0]
+                if remove_brackets:
+                    mark_code = remove_specific_brackets(mark_code)
+                if mark_code.startswith("(00)") or mark_code.startswith("00"):
+                    mark_code = None
+                    continue
+                break
+
+        if not mark_code:
+            continue
+
+        # Ищем код упаковки - обычно в столбце 3 или 8
+        pack_code = "БЕЗ_КОДА_УПАКОВКИ"
+
+        # Проверяем столбец 3
+        if df.shape[1] > 3:
+            pack_val = df.iloc[row_idx, 3]
+            if not pd.isna(pack_val):
+                pack_str = safe_str(pack_val)
+                if pack_str and pack_str.lower() != 'nan' and not pack_str.lower().startswith('код'):
+                    # Если это тоже код по паттерну, используем его
+                    pack_matches = code_pattern.findall(pack_str)
+                    if pack_matches:
+                        pack_code = pack_matches[0]
+                        if remove_brackets:
+                            pack_code = remove_specific_brackets(pack_code)
+                    elif len(pack_str) >= 10:
+                        pack_code = pack_str
+
+        # Если не нашли в столбце 3, проверяем столбец 8
+        if pack_code == "БЕЗ_КОДА_УПАКОВКИ" and df.shape[1] > 8:
+            pack_val = df.iloc[row_idx, 8]
+            if not pd.isna(pack_val):
+                pack_str = safe_str(pack_val)
+                if pack_str and pack_str.lower() != 'nan' and not pack_str.lower().startswith('код'):
+                    pack_matches = code_pattern.findall(pack_str)
+                    if pack_matches:
+                        pack_code = pack_matches[0]
+                        if remove_brackets:
+                            pack_code = remove_specific_brackets(pack_code)
+                    elif len(pack_str) >= 10:
+                        pack_code = pack_str
+
+        result.append((mark_code, pack_code))
+
+    return result
+
 # --- ФУНКЦИИ КЭШИРОВАНИЯ ---
 def get_file_hash(file_path):
     """Вычисляет хэш файла для определения изменений"""
@@ -103,6 +215,9 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
     duplicate_summary = {}
     article_routing_summary = []
     global_seen_codes = {}
+
+    # Кандидаты для КЛИН-версии (коды сходятся, коробки не сходятся)
+    klin_candidates = []
 
     with open(art_file, "r", encoding="utf-8") as f:
         lines = [line.strip() for line in f if line.strip()]
@@ -215,38 +330,20 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
                 # Извлекаем чистое имя без расширения .xlsx
                 file_name_short = os.path.splitext(os.path.basename(file_path))[0]
                 num_cols = df.shape[1]
-                
+
                 f_type = "import"
                 f_codes_raw = []
-                
+
+                # Определяем тип файла по количеству столбцов
                 if num_cols >= 4:
                     f_type = "trade"
-                    last_pack_code = "БЕЗ_КОДА_УПАКОВКИ"
-                    for idx_row in range(len(df)):
-                        mark_val = clean_raw_value(df.iloc[idx_row, 1])
-                        raw_pack = df.iloc[idx_row, 3]
-                        pack_val = safe_str(raw_pack)
-                        
-                        if pack_val and pack_val.lower() != 'nan' and not pack_val.lower().startswith('код'):
-                            last_pack_code = pack_val
-                            
-                        if not mark_val or len(mark_val) < 10: continue
-                        if remove_brackets: mark_val = remove_specific_brackets(mark_val)
-                        if mark_val.startswith("(00)") or mark_val.startswith("00"): continue
-                            
-                        f_codes_raw.append((mark_val, last_pack_code))
+                    # Используем новую функцию поиска по паттерну для Трейд файлов
+                    f_codes_raw = extract_trade_codes_by_pattern(df, remove_brackets)
                 else:
-                    if len(df) > 0:
-                        for col_idx in range(df.shape[1]):
-                            col_has_codes = False
-                            for val in df.iloc[:, col_idx].dropna():
-                                v = clean_raw_value(val)
-                                if v and len(v) >= 10:
-                                    col_has_codes = True
-                                    if remove_brackets: v = remove_specific_brackets(v)
-                                    f_codes_raw.append(v)
-                            if col_has_codes: break
-                                
+                    # Для Импорт файлов ищем просто все коды
+                    codes = extract_codes_by_pattern(df, remove_brackets)
+                    f_codes_raw = codes
+
                 file_data_list.append({'name': file_name_short, 'type': f_type, 'raw_codes': f_codes_raw})
             except Exception as e:
                 log_callback(f"[ОШИБКА ЧТЕНИЯ] файла {os.path.basename(file_path)}. Детали: {e}")
@@ -371,6 +468,36 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
                 "article": article, "expected": quantity_int, "actual": total_codes_count,
                 "diff": abs(quantity_int - total_codes_count), "status": "Расхождение", "files": ", ".join(files_loaded_names)
             })
+
+            # КЛИН-кандидаты: коды сходятся, коробки не сходятся, это Трейд
+            if trade_groups and check_boxes and cargo_places_int > 0:
+                codes_match = (total_codes_count == quantity_int)
+                boxes_mismatch = (actual_packages_count != cargo_places_int)
+
+                if codes_match and boxes_mismatch:
+                    # Собираем все коды маркировки и упаковки для этого артикула
+                    all_mark_codes = []
+                    all_pack_codes = []
+
+                    for file_name, p_groups in trade_groups.items():
+                        for pkg_code, codes_list in p_groups.items():
+                            all_mark_codes.extend(codes_list)
+                            if not pkg_code.startswith("БЕЗ_КОДА"):
+                                all_pack_codes.append(pkg_code)
+
+                    klin_candidates.append({
+                        "article": article,
+                        "name": name,
+                        "description": description,
+                        "quantity_plan": quantity_int,
+                        "quantity_fact": total_codes_count,
+                        "boxes_plan": cargo_places_int,
+                        "boxes_fact": actual_packages_count,
+                        "mark_codes": all_mark_codes,
+                        "pack_codes": all_pack_codes,
+                        "unit": unit
+                    })
+
             bad_counter += 1
             stats_callback("bad", bad_counter)
         else:
@@ -494,6 +621,72 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
         log_callback(" 🎉 Отлично! Все Excel-файлы из папки были успешно задействованы.")
     log_callback("============================================================\n")
 
+    # Возвращаем кандидатов для КЛИН-версии (коды сходятся, коробки не сходятся)
+    return klin_candidates
+
+
+# =================================================================
+# ГЕНЕРАЦИЯ КЛИН-ФИЛЬА (CLEAN_версия)
+# =================================================================
+def create_klin_file(selected_articles, out_dir, invoice_prefix="", remove_brackets=False, log_callback=None):
+    """
+    Создает файл CLEAN_УралТрейд.xlsx с выбранными артикулами.
+    selected_articles: список словарей из klin_candidates
+    Возвращает путь к созданному файлу или None.
+    """
+    if not selected_articles:
+        return None
+
+    from openpyxl.styles import Alignment
+
+    wb = Workbook()
+    ws_mark = wb.active
+    ws_mark.title = "Коды маркировки"
+    ws_pack = wb.create_sheet(title="Коды упаковки")
+
+    # Лист 1: Коды маркировки
+    total_marks = 0
+    for idx, art in enumerate(selected_articles, start=1):
+        # Заголовок артикула
+        ws_mark[f"A{idx}"] = f"Артикул: {art['article']} | {art['name']}"
+        ws_mark[f"B{idx}"] = f"Коробок: план {art['boxes_plan']}, факт {art['boxes_fact']}"
+        idx += 1
+        for code in art["mark_codes"]:
+            display = remove_specific_brackets(code) if remove_brackets else code
+            ws_mark[f"A{idx}"] = display
+            idx += 1
+        total_marks += len(art["mark_codes"])
+
+    # Лист 2: Коды упаковки
+    total_packs = 0
+    for idx, art in enumerate(selected_articles, start=1):
+        ws_pack[f"A{idx}"] = f"Артикул: {art['article']} | {art['name']}"
+        idx += 1
+        for code in art["pack_codes"]:
+            display = remove_specific_brackets(code) if remove_brackets else code
+            ws_pack[f"A{idx}"] = display
+            idx += 1
+        total_packs += len(art["pack_codes"])
+
+    # Формат
+    for work_sheet in [ws_mark, ws_pack]:
+        for col in work_sheet.columns:
+            max_length = max(len(str(cell.value or '')) for cell in col)
+            column = col[0].column_letter
+            for cell in col:
+                cell.alignment = Alignment(vertical="top")
+            work_sheet.column_dimensions[column].width = min(max_length + 5, 60)
+
+    prefix = f"{invoice_prefix.strip()} " if invoice_prefix.strip() else ""
+    out_path = os.path.join(out_dir, f"{prefix}CLEAN_УралТрейд.xlsx")
+
+    wb.save(out_path)
+
+    if log_callback:
+        log_callback(f"  ✅ Создан: {os.path.basename(out_path)} (Маркировок: {total_marks}, Упаковок: {total_packs})")
+
+    return out_path
+
 
 # =================================================================
 # РЕЖИМ 2: БЫСТРАЯ ОЧИСТКА (Форматтер / Клинер)
@@ -541,30 +734,26 @@ def process_cleaner_mode(c_folder, out_dir, log_callback, progress_callback, sta
         pack_codes = []
         local_dups = 0
 
-        for i in range(len(df)):
-            if df.shape[1] > 0:
-                val_a = clean_raw_value(df.iloc[i, 0])
-                if val_a and len(val_a) >= 10:
-                    if remove_brackets:
-                        val_a = remove_specific_brackets(val_a)
-                    if val_a not in global_seen_marks:
-                        global_seen_marks.add(val_a)
-                        mark_codes.append(val_a)
-                    else:
-                        local_dups += 1
-                        total_duplicates_removed += 1
-                        
-            if df.shape[1] > 8:
-                val_i = clean_raw_value(df.iloc[i, 8])
-                if val_i and len(val_i) >= 10:
-                    if remove_brackets:
-                        val_i = remove_specific_brackets(val_i)
-                    if val_i not in global_seen_packs:
-                        global_seen_packs.add(val_i)
-                        pack_codes.append(val_i)
-                    else:
-                        local_dups += 1
-                        total_duplicates_removed += 1
+        # Используем новую функцию поиска по паттерну
+        codes_pairs = extract_trade_codes_by_pattern(df, remove_brackets)
+
+        for mark_code, pack_code in codes_pairs:
+            # Проверяем дубликаты маркировки
+            if mark_code not in global_seen_marks:
+                global_seen_marks.add(mark_code)
+                mark_codes.append(mark_code)
+            else:
+                local_dups += 1
+                total_duplicates_removed += 1
+
+            # Проверяем дубликаты упаковки
+            if pack_code != "БЕЗ_КОДА_УПАКОВКИ":
+                if pack_code not in global_seen_packs:
+                    global_seen_packs.add(pack_code)
+                    pack_codes.append(pack_code)
+                else:
+                    local_dups += 1
+                    total_duplicates_removed += 1
 
         wb = Workbook()
         ws_mark = wb.active
@@ -647,24 +836,17 @@ def process_cleaner_mode(c_folder, out_dir, log_callback, progress_callback, sta
 
         mark_codes = []
         local_dups = 0
-        
-        if len(df) > 0:
-            for col_idx in range(df.shape[1]):
-                col_has_codes = False
-                for i in range(len(df)):
-                    val_a = clean_raw_value(df.iloc[i, col_idx])
-                    if val_a and len(val_a) >= 10:
-                        col_has_codes = True
-                        if remove_brackets:
-                            val_a = remove_specific_brackets(val_a)
-                        if val_a not in global_seen_marks:
-                            global_seen_marks.add(val_a)
-                            mark_codes.append(val_a)
-                        else:
-                            local_dups += 1
-                            total_duplicates_removed += 1
-                if col_has_codes:
-                    break
+
+        # Используем новую функцию поиска по паттерну
+        codes = extract_codes_by_pattern(df, remove_brackets)
+
+        for code in codes:
+            if code not in global_seen_marks:
+                global_seen_marks.add(code)
+                mark_codes.append(code)
+            else:
+                local_dups += 1
+                total_duplicates_removed += 1
 
         wb = Workbook()
         ws_mark = wb.active
