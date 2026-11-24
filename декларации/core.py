@@ -415,7 +415,6 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
 
         # Проверяем, является ли это KLIN-кандидатом (коды сходятся, коробки не сходятся)
         is_klin_candidate = any(k['article'] == article for k in klin_candidates)
-        boxes_note = "ДЕКЛАРИРУЕМ ТОЛЬКО КОДЫ" if is_klin_candidate else str(cargo_places_int)
 
         if trade_groups:
             for file_name, p_groups in trade_groups.items():
@@ -425,13 +424,17 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
                     ws_trade[f"B{curr_trade}"] = file_name # Теперь без .xlsx
                     ws_trade[f"C{curr_trade}"] = name
                     ws_trade[f"D{curr_trade}"] = description
-                    ws_trade[f"E{curr_trade}"] = boxes_note
+                    ws_trade[f"E{curr_trade}"] = str(cargo_places_int)
                     ws_trade[f"F{curr_trade}"] = diff_str
                     ws_trade[f"G{curr_trade}"] = str(quantity_int)
                     ws_trade[f"H{curr_trade}"] = unit
 
-                    display_pkg_code = remove_specific_brackets(pkg_code) if remove_brackets else pkg_code
-                    ws_trade[f"I{curr_trade}"] = f"Код упаковки: {display_pkg_code}"
+                    # Если это KLIN-кандидат, пишем специальную надпись вместо кода упаковки
+                    if is_klin_candidate:
+                        ws_trade[f"I{curr_trade}"] = "ДЕКЛАРИРУЕМ ТОЛЬКО КОДЫ"
+                    else:
+                        display_pkg_code = remove_specific_brackets(pkg_code) if remove_brackets else pkg_code
+                        ws_trade[f"I{curr_trade}"] = f"Код упаковки: {display_pkg_code}"
 
                     curr_trade += 1
                     for code in codes_list:
@@ -446,7 +449,7 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
                 ws_import[f"B{curr_import}"] = file_name # Теперь без .xlsx
                 ws_import[f"C{curr_import}"] = name
                 ws_import[f"D{curr_import}"] = description
-                ws_import[f"E{curr_import}"] = boxes_note
+                ws_import[f"E{curr_import}"] = str(cargo_places_int)
                 ws_import[f"F{curr_import}"] = diff_str
                 ws_import[f"G{curr_import}"] = str(quantity_int)
                 ws_import[f"H{curr_import}"] = unit
@@ -605,8 +608,7 @@ def create_klin_file(selected_articles, out_dir, invoice_prefix="", remove_brack
         total_packs += len(art["pack_codes"])
 
     # Лист 3: ТОЛЬКО КОДЫ (все коды маркировки без артикулов)
-    ws_only_codes[f"A1"] = "ДЕКЛАРИРУЕМ ТОЛЬКО КОДЫ"
-    row_only = 2
+    row_only = 1
     for art in selected_articles:
         for code in art["mark_codes"]:
             display = remove_specific_brackets(code) if remove_brackets else code
@@ -686,8 +688,13 @@ def extract_import_codes_for_cleaner(df, remove_brackets=False):
 # =================================================================
 # РЕЖИМ 2: БЫСТРАЯ ОЧИСТКА (Форматтер / Клинер)
 # =================================================================
-def process_cleaner_mode(c_folder, out_dir, log_callback, progress_callback, stats_callback, remove_brackets=False, invoice_prefix="", cancel_callback=None, dry_run=False, file_callback=None):
+def process_cleaner_mode(c_folder, out_dir, log_callback, progress_callback, stats_callback, remove_brackets=False, invoice_prefix="", cancel_callback=None, dry_run=False, file_callback=None, exclude_articles=None):
     all_files = [f for f in os.listdir(c_folder) if f.endswith(('.xlsx', '.xls')) and not f.startswith('~')]
+
+    # Исключаем файлы, содержащие названия артикулов из exclude_articles
+    if exclude_articles:
+        all_files = [f for f in all_files if not any(art in f for art in exclude_articles)]
+
     trade_files = [f for f in all_files if 'трейд' in f.lower() and 'clean' not in f.lower() and 'декларации' not in f.lower()]
     import_files = [f for f in all_files if 'импорт' in f.lower() and 'clean' not in f.lower() and 'декларации' not in f.lower()]
 

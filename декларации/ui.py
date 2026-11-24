@@ -722,7 +722,9 @@ class CustomsApp:
     def save_current_settings(self):
         """Сохраняет текущие настройки в конфиг"""
         self.config.set("last_articles_path", self.articles_path.get())
-        self.config.set("last_codes_dir", self.codes_dir.get())
+        # Не сохраняем last_codes_dir в режиме cleaner (там он временно равен output_dir)
+        if self.app_mode.get() != "clean":
+            self.config.set("last_codes_dir", self.codes_dir.get())
         self.config.set("last_output_dir", self.output_dir.get())
         self.config.set("last_invoice_prefix", self.invoice_prefix.get())
         self.config.set("auto_open_results", self.auto_open.get())
@@ -1401,13 +1403,17 @@ class CustomsApp:
                 else:
                     self.log("=== ЗАПУСК РЕЖИМА БЫСТРОЙ ОЧИСТКИ (ФОРМАТТЕР СТОЛБЦОВ) ===")
 
+                # Исключаем артикулы из предыдущего запуска (если были KLIN-кандидаты)
+                exclude_articles = [k['article'] for k in klin_candidates] if klin_candidates else None
+
                 process_cleaner_mode(
                     code_dir, out_dir, self.log, self.update_progress, self.set_stat,
                     remove_brackets=is_remove_brackets_enabled,
                     invoice_prefix=prefix,
                     cancel_callback=lambda: self.is_cancelled,
                     dry_run=dry_run,
-                    file_callback=self.set_current_file
+                    file_callback=self.set_current_file,
+                    exclude_articles=exclude_articles
                 )
 
             if self.is_cancelled:
