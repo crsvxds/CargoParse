@@ -16,109 +16,6 @@ def safe_str(val):
         return str(int(val))
     return str(val).strip()
 
-# --- НОВАЯ ФУНКЦИЯ: ПОИСК КОДОВ ПО ПАТТЕРНУ ---
-def extract_codes_by_pattern(df, remove_brackets=False):
-    """
-    Ищ��т коды вида (01)...числа...(21)...буквы... во ВСЕХ столбцах.
-    Возвращает список найденных кодов (для импорта) или список (код_маркировки, код_упаковки) для трейда.
-    """
-    # Паттерн: (01) за которым идут цифры, затем (21) за которым идут ЛЮБЫЕ символы кроме пробелов и скобок
-    code_pattern = re.compile(r'\(01\)\d+\(21\)[^\s()]+')
-
-    found_codes = []
-
-    # Проходим по всем строкам и столбцам
-    for row_idx in range(len(df)):
-        for col_idx in range(df.shape[1]):
-            cell_val = df.iloc[row_idx, col_idx]
-            if pd.isna(cell_val):
-                continue
-
-            cell_str = safe_str(cell_val)
-            if not cell_str:
-                continue
-
-            # Ищем все совпадения паттерна в ячейке
-            matches = code_pattern.findall(cell_str)
-
-            for match in matches:
-                cleaned_code = match
-                if remove_brackets:
-                    cleaned_code = remove_specific_brackets(match)
-
-                # Пропускаем коды начинающиеся с (00) или 00
-                if cleaned_code.startswith("(00)") or cleaned_code.startswith("00"):
-                    continue
-
-                found_codes.append(cleaned_code)
-
-    return found_codes
-
-def extract_trade_codes_by_pattern(df, remove_brackets=False):
-    """
-    Специальная версия для Трейд файлов: возвращает пары (код_маркировки, код_упаковки).
-    Коды упаковки ищем отдельно в правых столбцах (обычно столбец 3 или 8).
-    """
-    code_pattern = re.compile(r'\(01\)\d+\(21\)[^\s()]+')
-
-    result = []
-
-    for row_idx in range(len(df)):
-        # Ищем код маркировки в любом столбце
-        mark_code = None
-        for col_idx in range(df.shape[1]):
-            cell_val = df.iloc[row_idx, col_idx]
-            if pd.isna(cell_val):
-                continue
-            cell_str = safe_str(cell_val)
-            matches = code_pattern.findall(cell_str)
-            if matches:
-                mark_code = matches[0]
-                if remove_brackets:
-                    mark_code = remove_specific_brackets(mark_code)
-                if mark_code.startswith("(00)") or mark_code.startswith("00"):
-                    mark_code = None
-                    continue
-                break
-
-        if not mark_code:
-            continue
-
-        # Ищем код упаковки - обычно в столбце 3 или 8
-        pack_code = "БЕЗ_КОДА_УПАКОВКИ"
-
-        # Проверяем столбец 3
-        if df.shape[1] > 3:
-            pack_val = df.iloc[row_idx, 3]
-            if not pd.isna(pack_val):
-                pack_str = safe_str(pack_val)
-                if pack_str and pack_str.lower() != 'nan' and not pack_str.lower().startswith('код'):
-                    # Если это тоже код по паттерну, используем его
-                    pack_matches = code_pattern.findall(pack_str)
-                    if pack_matches:
-                        pack_code = pack_matches[0]
-                        if remove_brackets:
-                            pack_code = remove_specific_brackets(pack_code)
-                    elif len(pack_str) >= 10:
-                        pack_code = pack_str
-
-        # Если не нашли в столбце 3, проверяем столбец 8
-        if pack_code == "БЕЗ_КОДА_УПАКОВКИ" and df.shape[1] > 8:
-            pack_val = df.iloc[row_idx, 8]
-            if not pd.isna(pack_val):
-                pack_str = safe_str(pack_val)
-                if pack_str and pack_str.lower() != 'nan' and not pack_str.lower().startswith('код'):
-                    pack_matches = code_pattern.findall(pack_str)
-                    if pack_matches:
-                        pack_code = pack_matches[0]
-                        if remove_brackets:
-                            pack_code = remove_specific_brackets(pack_code)
-                    elif len(pack_str) >= 10:
-                        pack_code = pack_str
-
-        result.append((mark_code, pack_code))
-
-    return result
 
 # --- ФУНКЦИИ КЭШИРОВАНИЯ ---
 def get_file_hash(file_path):
@@ -326,15 +223,33 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
                 f_type = "import"
                 f_codes_raw = []
 
-                # Определяем тип файла по количеству столбцов
                 if num_cols >= 4:
                     f_type = "trade"
-                    # Используем новую функцию поиска по паттерну для Трейд файлов
-                    f_codes_raw = extract_trade_codes_by_pattern(df, remove_brackets)
+                    last_pack_code = "БЕЗ_КОДА_УПАКОВКИ"
+                    for idx_row in range(len(df)):
+                        mark_val = clean_raw_value(df.iloc[idx_row, 1])
+                        raw_pack = df.iloc[idx_row, 3]
+                        pack_val = safe_str(raw_pack)
+
+                        if pack_val and pack_val.lower() != 'nan' and not pack_val.lower().startswith('код'):
+                            last_pack_code = pack_val
+
+                        if not mark_val or len(mark_val) < 10: continue
+                        if remove_brackets: mark_val = remove_specific_brackets(mark_val)
+                        if mark_val.startswith("(00)") or mark_val.startswith("00"): continue
+
+                        f_codes_raw.append((mark_val, last_pack_code))
                 else:
-                    # Для Импорт файлов ищем просто все коды
-                    codes = extract_codes_by_pattern(df, remove_brackets)
-                    f_codes_raw = codes
+                    if len(df) > 0:
+                        for col_idx in range(df.shape[1]):
+                            col_has_codes = False
+                            for val in df.iloc[:, col_idx].dropna():
+                                v = clean_raw_value(val)
+                                if v and len(v) >= 10:
+                                    col_has_codes = True
+                                    if remove_brackets: v = remove_specific_brackets(v)
+                                    f_codes_raw.append(v)
+                            if col_has_codes: break
 
                 file_data_list.append({'name': file_name_short, 'type': f_type, 'raw_codes': f_codes_raw})
             except Exception as e:
@@ -730,22 +645,19 @@ def process_cleaner_mode(c_folder, out_dir, log_callback, progress_callback, sta
         codes_pairs = extract_trade_codes_by_pattern(df, remove_brackets)
 
         for mark_code, pack_code in codes_pairs:
-            # Проверяем дубликаты маркировки
-            if mark_code not in global_seen_marks:
-                global_seen_marks.add(mark_code)
-                mark_codes.append(mark_code)
-            else:
+            # Проверяем дубликаты маркировки - это ГЛАВНЫЙ счетчик
+            if mark_code in global_seen_marks:
                 local_dups += 1
                 total_duplicates_removed += 1
+            else:
+                global_seen_marks.add(mark_code)
+                mark_codes.append(mark_code)
 
-            # Проверяем дубликаты упаковки
+            # Проверяем дубликаты упаковки - отдельно
             if pack_code != "БЕЗ_КОДА_УПАКОВКИ":
                 if pack_code not in global_seen_packs:
                     global_seen_packs.add(pack_code)
                     pack_codes.append(pack_code)
-                else:
-                    local_dups += 1
-                    total_duplicates_removed += 1
 
         wb = Workbook()
         ws_mark = wb.active
