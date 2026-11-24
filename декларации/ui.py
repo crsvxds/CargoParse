@@ -12,7 +12,7 @@ try:
 except ImportError:
     HAS_DND = False
 
-from core import process_customs_data, process_cleaner_mode
+from core import process_customs_data, process_cleaner_mode, create_klin_file
 from config import Config, BASE_DIR
 
 
@@ -828,6 +828,180 @@ class CustomsApp:
 
         self.log(f"[✓] Сводная таблица скопирована в буфер обмена ({len(summary_lines) - 1} строк)")
 
+    def show_klin_dialog(self, candidates, out_dir, prefix, remove_brackets):
+        """Диалог выбора артикулов для создания КЛИН-версии файла"""
+        if not candidates:
+            return
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Создание КЛИН-версии файла")
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        # Размер окна
+        dlg.update_idletasks()
+        width, height = 720, 520
+        x = (dlg.winfo_screenwidth() - width) // 2
+        y = (dlg.winfo_screenheight() - height) // 2
+        dlg.geometry(f"{width}x{height}+{x}+{y}")
+
+        # --- Заголовок ---
+        header = tk.Frame(dlg, bg="#1e293b", padx=14, pady=10)
+        header.pack(fill=tk.X)
+        tk.Label(
+            header,
+            text="Обнаружены артикулы с расхождением по КОРОБКАМ (коды маркировки совпадают)",
+            bg="#1e293b", fg="#ffffff", font=("Segoe UI", 11, "bold"), justify=tk.LEFT
+        ).pack(anchor=tk.W)
+        tk.Label(
+            header,
+            text="Выберите артикулы, которые нужно включить в CLEAN-версию файла:",
+            bg="#1e293b", fg="#94a3b8", font=("Segoe UI", 9)
+        ).pack(anchor=tk.W, pady=(4, 0))
+
+        # --- Фрейм со списком ---
+        list_frame = tk.Frame(dlg, bg="#f1f5f9", padx=10, pady=10)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        scrollbar = tk.Scrollbar(list_frame, orient=tk.VERTICAL)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        canvas = tk.Canvas(list_frame, bg="#ffffff", highlightthickness=1,
+                           highlightbackground="#cbd5e1", bd=0, yscrollcommand=scrollbar.set)
+        scrollbar.config(command=canvas.yview)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        inner = tk.Frame(canvas, bg="#ffffff")
+        inner.bind("<Configure>",
+                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=inner, anchor=tk.NW)
+
+        # --- Создаём чекбоксы ---
+        check_vars = {}
+        checkboxes = []
+
+        for art in candidates:
+            row = tk.Frame(inner, bg="#ffffff", pady=4)
+            row.pack(fill=tk.X)
+
+            var = tk.BooleanVar(value=True)
+            check_vars[art["article"]] = var
+
+            cb = tk.Checkbutton(
+                row, text="", variable=var, bg="#ffffff",
+                activebackground="#ffffff", selectcolor="#ffffff"
+            )
+            cb.pack(side=tk.LEFT, padx=(4, 8))
+            checkboxes.append(cb)
+
+            info = tk.Frame(row, bg="#ffffff")
+            info.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+            tk.Label(
+                info, text=art["article"], bg="#ffffff", fg="#0f172a",
+                font=("Consolas", 10, "bold"), anchor=tk.W
+            ).pack(side=tk.LEFT, padx=(0, 12))
+
+            tk.Label(
+                info,
+                text=f"Коды: {art['quantity_fact']}/{art['quantity_plan']} ✓  |  "
+                     f"Коробки: {art['boxes_fact']}/{art['boxes_plan']} ✗",
+                bg="#ffffff", fg="#dc2626", font=("Segoe UI", 9), anchor=tk.W
+            ).pack(side=tk.LEFT)
+
+            name_lbl = tk.Label(
+                row, text=art["name"][:45], bg="#ffffff", fg="#64748b",
+                font=("Segoe UI", 8), anchor=tk.E
+            )
+            name_lbl.pack(side=tk.RIGHT, padx=8)
+
+        # --- Счетчик выбранных ---
+        counter_var = tk.StringVar(value=f"Выбрано: {len(candidates)} из {len(candidates)}")
+
+        def update_counter():
+            count = sum(1 for v in check_vars.values() if v.get())
+            counter_var.set(f"Выбрано: {count} из {len(candidates)}")
+
+        for var in check_vars.values():
+            var.trace_add("write", lambda *a: update_counter())
+
+        # --- Кнопки ---
+        btn_frame = tk.Frame(dlg, bg="#f1f5f9", padx=10, pady=10)
+        btn_frame.pack(fill=tk.X)
+
+        def select_all():
+            for var in check_vars.values():
+                var.set(True)
+            update_counter()
+
+        def deselect_all():
+            for var in check_vars.values():
+                var.set(False)
+            update_counter()
+
+        tk.Button(
+            btn_frame, text="☑ Выбрать все", command=select_all,
+            bg="#e2e8f0", fg="#0f172a", borderwidth=0, activebackground="#cbd5e1",
+            font=("Segoe UI", 9), padx=10, pady=4
+        ).pack(side=tk.LEFT)
+
+        tk.Button(
+            btn_frame, text="☐ Снять все", command=deselect_all,
+            bg="#e2e8f0", fg="#0f172a", borderwidth=0, activebackground="#cbd5e1",
+            font=("Segoe UI", 9), padx=10, pady=4
+        ).pack(side=tk.LEFT, padx=(8, 0))
+
+        tk.Label(
+            btn_frame, textvariable=counter_var, bg="#f1f5f9", fg="#0f172a",
+            font=("Segoe UI", 9)
+        ).pack(side=tk.LEFT, padx=16)
+
+        def on_cancel():
+            dlg.destroy()
+
+        def on_create():
+            selected = [a for a in candidates if check_vars[a["article"]].get()]
+            if not selected:
+                messagebox.showwarning("Ничего не выбрано", "Выберите хотя бы один артикул.", parent=dlg)
+                return
+
+            try:
+                path = create_klin_file(
+                    selected, out_dir,
+                    invoice_prefix=prefix,
+                    remove_brackets=remove_brackets,
+                    log_callback=self.log
+                )
+                if path:
+                    self.log(f"[✓] КЛИН-версия создана: {os.path.basename(path)}")
+                    messagebox.showinfo(
+                        "Готово",
+                        f"CLEAN-файл создан:\n{path}\n\n"
+                        f"Артикулов: {len(selected)}\n"
+                        f"Маркировок: {sum(len(a['mark_codes']) for a in selected)}\n"
+                        f"Упаковок: {sum(len(a['pack_codes']) for a in selected)}",
+                        parent=dlg
+                    )
+                    dlg.destroy()
+                else:
+                    messagebox.showerror("Ошибка", "Не удалось создать файл.", parent=dlg)
+            except Exception as ex:
+                messagebox.showerror("Ошибка", f"Ошибка при создании файла:\n{ex}", parent=dlg)
+
+        tk.Button(
+            btn_frame, text="✖ Отмена", command=on_cancel,
+            bg="#e2e8f0", fg="#7f1d1d", borderwidth=0, activebackground="#cbd5e1",
+            font=("Segoe UI", 9), padx=12, pady=4
+        ).pack(side=tk.RIGHT)
+
+        tk.Button(
+            btn_frame, text="✅ Создать CLEAN-файл", command=on_create,
+            bg="#16a34a", fg="#ffffff", borderwidth=0, activebackground="#15803d",
+            font=("Segoe UI", 9, "bold"), padx=12, pady=4
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+
+        dlg.protocol("WM_DELETE_WINDOW", on_cancel)
+
     def save_log(self):
         content = self.log_text.get("1.0", tk.END).strip()
         if not content:
@@ -1193,6 +1367,8 @@ class CustomsApp:
         try:
             is_remove_brackets_enabled = self.remove_brackets_var.get()
 
+            klin_candidates = []
+
             if self.app_mode.get() == "verify":
                 if not os.path.exists(art):
                     messagebox.showerror("Ошибка", f"Файл {art} не найден!")
@@ -1209,7 +1385,7 @@ class CustomsApp:
                 is_check_boxes_enabled = self.check_boxes_var.get()
 
                 # Передаем callback для проверки отмены и dry_run режим
-                process_customs_data(
+                klin_candidates = process_customs_data(
                     art, code_dir, out_dir,
                     self.log, self.update_progress, self.set_stat,
                     check_boxes=is_check_boxes_enabled,
@@ -1257,6 +1433,10 @@ class CustomsApp:
                     messagebox.showinfo("Проверка завершена", f"Проверка выполнена!\nФайлы не были созданы (режим проверки).")
                 else:
                     messagebox.showinfo("Успех", f"Операция выполнена!\nВсе результаты сохранены в:\n{out_dir}")
+
+                    # Предлагаем создать КЛИН-версию (только если есть кандидаты)
+                    if klin_candidates:
+                        self.root.after(100, lambda: self.show_klin_dialog(klin_candidates, out_dir, prefix, is_remove_brackets_enabled))
 
                     if self.auto_open.get() and not dry_run:
                         if sys.platform == 'win32':
