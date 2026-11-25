@@ -273,6 +273,10 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
             if fdata['type'] == 'trade':
                 if current_file_name not in trade_groups: trade_groups[current_file_name] = {}
                 for mark_val, pkg_code in fdata['raw_codes']:
+                    # Строгая проверка: пропускаем пустые/короткие коды
+                    if not mark_val or len(mark_val.strip()) < 10:
+                        continue
+
                     if mark_val in local_art_seen or mark_val in global_seen_codes:
                         dup_count_for_article += 1
                         total_dups_counter += 1
@@ -289,6 +293,10 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
             else:
                 if current_file_name not in import_groups: import_groups[current_file_name] = []
                 for mark_val in fdata['raw_codes']:
+                    # Строгая проверка: пропускаем пустые/короткие коды
+                    if not mark_val or len(mark_val.strip()) < 10:
+                        continue
+
                     if mark_val in local_art_seen or mark_val in global_seen_codes:
                         dup_count_for_article += 1
                         total_dups_counter += 1
