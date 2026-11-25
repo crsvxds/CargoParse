@@ -17,6 +17,24 @@ def safe_str(val):
     return str(val).strip()
 
 
+def extract_gs1_identifier(code_str):
+    """Извлекает основной идентификатор (01) из GS1 кода для правильного подсчета
+    (01)04681043709929(21)5:(RX-jJXHKQX -> 04681043709929
+    (01)04681043709929(21)5!,U,UH*ouj0o -> 04681043709929 (один и тот же код)"""
+    if not code_str:
+        return code_str
+
+    match = re.search(r'\(01\)(\d{14})', code_str)
+    if match:
+        return match.group(1)
+
+    match = re.search(r'^01(\d{14})', code_str)
+    if match:
+        return match.group(1)
+
+    return code_str
+
+
 # --- ФУНКЦИИ КЭШИРОВАНИЯ ---
 def get_file_hash(file_path):
     """Вычисляет хэш файла для определения изменений"""
@@ -269,33 +287,39 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
         for fdata in file_data_list:
             current_file_name = fdata['name']
             files_loaded_names.append(current_file_name)
-            
+
             if fdata['type'] == 'trade':
                 if current_file_name not in trade_groups: trade_groups[current_file_name] = {}
                 for mark_val, pkg_code in fdata['raw_codes']:
-                    if mark_val in local_art_seen or mark_val in global_seen_codes:
+                    # Извлекаем основной идентификатор (01) для правильного подсчета
+                    gs1_id = extract_gs1_identifier(mark_val)
+
+                    if gs1_id in local_art_seen or gs1_id in global_seen_codes:
                         dup_count_for_article += 1
                         total_dups_counter += 1
                         stats_callback("dups", total_dups_counter)
                     else:
-                        local_art_seen.add(mark_val)
-                        global_seen_codes[mark_val] = current_file_name
+                        local_art_seen.add(gs1_id)
+                        global_seen_codes[gs1_id] = current_file_name
                         trade_codes_count += 1
                         total_codes_count += 1
-                        
+
                         if not pkg_code.startswith("БЕЗ_КОДА"): actual_packages_set.add(pkg_code)
                         if pkg_code not in trade_groups[current_file_name]: trade_groups[current_file_name][pkg_code] = []
                         trade_groups[current_file_name][pkg_code].append(mark_val)
             else:
                 if current_file_name not in import_groups: import_groups[current_file_name] = []
                 for mark_val in fdata['raw_codes']:
-                    if mark_val in local_art_seen or mark_val in global_seen_codes:
+                    # Извлекаем основной идентификатор (01) для правильного подсчета
+                    gs1_id = extract_gs1_identifier(mark_val)
+
+                    if gs1_id in local_art_seen or gs1_id in global_seen_codes:
                         dup_count_for_article += 1
                         total_dups_counter += 1
                         stats_callback("dups", total_dups_counter)
                     else:
-                        local_art_seen.add(mark_val)
-                        global_seen_codes[mark_val] = current_file_name
+                        local_art_seen.add(gs1_id)
+                        global_seen_codes[gs1_id] = current_file_name
                         import_codes_count += 1
                         total_codes_count += 1
                         import_groups[current_file_name].append(mark_val)
