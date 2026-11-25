@@ -553,12 +553,9 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
 # =================================================================
 def create_klin_file(selected_articles, out_dir, invoice_prefix="", remove_brackets=False, log_callback=None):
     """
-    Создает файл CLEAN_УралТрейд.xlsx с 3 вкладками:
-    1. Коды маркировки - по артикулам
-    2. Коды упаковки - по артикулам
-    3. ТОЛЬКО КОДЫ - все коды маркировки без артикулов
-    selected_articles: список словарей из klin_candidates
-    Возвращает путь к созданному файлу или None.
+    Создает файл CLEAN_УралТрейд.xlsx с 2 вкладками:
+    1. Коды маркировки - просто перечисления кодов
+    2. Коды упаковки - просто перечисления кодов упаковок
     """
     if not selected_articles:
         return None
@@ -567,71 +564,41 @@ def create_klin_file(selected_articles, out_dir, invoice_prefix="", remove_brack
 
     wb = Workbook()
 
-    # Удаляем дефолтный лист
     if 'Sheet' in wb.sheetnames:
         del wb['Sheet']
 
     ws_mark = wb.create_sheet(title="Коды маркировки", index=0)
     ws_pack = wb.create_sheet(title="Коды упаковки", index=1)
-    ws_only_codes = wb.create_sheet(title="ТОЛЬКО КОДЫ", index=2)
 
-    # Лист 1: Коды маркировки (по артикулам)
+    # Лист 1: Коды маркировки - просто коды
     row_mark = 1
     total_marks = 0
     for art in selected_articles:
-        # Заголовок артикула
-        ws_mark[f"A{row_mark}"] = f"Артикул: {art['article']} | {art['name']}"
-        ws_mark[f"B{row_mark}"] = f"Коробок: план {art['boxes_plan']}, факт {art['boxes_fact']}"
-        row_mark += 1
-
-        # Коды маркировки
         for code in art["mark_codes"]:
             display = remove_specific_brackets(code) if remove_brackets else code
             ws_mark[f"A{row_mark}"] = display
             row_mark += 1
+            total_marks += 1
 
-        # Пустая строка между артикулами
-        row_mark += 1
-        total_marks += len(art["mark_codes"])
-
-    # Лист 2: Коды упаковки (по артикулам)
+    # Лист 2: Коды упаковки - просто коды
     row_pack = 1
     total_packs = 0
     for art in selected_articles:
-        # Заголовок артикула
-        ws_pack[f"A{row_pack}"] = f"Артикул: {art['article']} | {art['name']}"
-        row_pack += 1
-
-        # Коды упаковки
         if art["pack_codes"]:
             for code in art["pack_codes"]:
                 display = remove_specific_brackets(code) if remove_brackets else code
                 ws_pack[f"A{row_pack}"] = display
                 row_pack += 1
-        else:
-            ws_pack[f"A{row_pack}"] = "БЕЗ КОДА УПАКОВКИ"
-            row_pack += 1
-
-        # Пустая строка между артикулами
-        row_pack += 1
-        total_packs += len(art["pack_codes"])
-
-    # Лист 3: ТОЛЬКО КОДЫ (все коды маркировки без артикулов)
-    row_only = 1
-    for art in selected_articles:
-        for code in art["mark_codes"]:
-            display = remove_specific_brackets(code) if remove_brackets else code
-            ws_only_codes[f"A{row_only}"] = display
-            row_only += 1
+                total_packs += 1
 
     # Форматирование
-    for work_sheet in [ws_mark, ws_pack, ws_only_codes]:
+    for work_sheet in [ws_mark, ws_pack]:
         for col in work_sheet.columns:
             max_length = max(len(str(cell.value or '')) for cell in col)
             column = col[0].column_letter
             for cell in col:
-                cell.alignment = Alignment(vertical="top", wrap_text=True)
-            work_sheet.column_dimensions[column].width = min(max_length + 5, 60)
+                cell.alignment = Alignment(vertical="top")
+            work_sheet.column_dimensions[column].width = min(max_length + 2, 100)
 
     prefix = f"{invoice_prefix.strip()} " if invoice_prefix.strip() else ""
     out_path = os.path.join(out_dir, f"{prefix}CLEAN_УралТрейд.xlsx")
@@ -646,25 +613,35 @@ def create_klin_file(selected_articles, out_dir, invoice_prefix="", remove_brack
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ФОРМАТТЕРА ---
 def extract_trade_codes_for_cleaner(df, remove_brackets=False):
-    """
-    Для Форматтера: извлекает коды маркировки и упаковки из Трейд файлов.
-    Возвращает список пар (код_маркировки, код_упаковки).
-    """
+    """Извлекает коды маркировки (колона 0) и уникальные упаковки (колона 8) из Трейд файлов."""
     result = []
+    unique_packs = set()
+
     if len(df) == 0:
         return result
 
+    # Первый проход: собираем уникальные коды упаковки и коды маркировки
     for idx_row in range(len(df)):
-        mark_val = clean_raw_value(df.iloc[idx_row, 1])
-        raw_pack = df.iloc[idx_row, 3] if df.shape[1] > 3 else None
-        pack_val = safe_str(raw_pack) if raw_pack is not None else ""
+        # Собираем коды упаковки
+        raw_pack = df.iloc[idx_row, 8] if df.shape[1] > 8 else None
+        if raw_pack is not None and pd.notna(raw_pack):
+            pack_val = safe_str(raw_pack).strip()
+            pack_val = re.sub(r'(?i)код\s+упаковки\s*:\s*', '', pack_val).strip()
+            if pack_val and pack_val.lower() != 'nan':
+                unique_packs.add(pack_val)
 
-        if mark_val and len(mark_val) >= 10:
+    # Второй проход: создаем пары маркировка-упаковка (каждая маркировка с первой найденной упаковкой)
+    first_pack = list(unique_packs)[0] if unique_packs else ""
+
+    for idx_row in range(1, len(df)):  # Пропускаем заголовок
+        mark_val = clean_raw_value(df.iloc[idx_row, 0])
+
+        if mark_val and len(mark_val.strip()) >= 10:
             if remove_brackets:
                 mark_val = remove_specific_brackets(mark_val)
-            if not mark_val.startswith("(00)") and not mark_val.startswith("00"):
-                pack_code = pack_val if pack_val and pack_val.lower() != 'nan' and not pack_val.lower().startswith('код') else "БЕЗ_КОДА_УПАКОВКИ"
-                result.append((mark_val, pack_code))
+            # Исключаем коды упаковок (они начинаются с 000466...)
+            if not mark_val.startswith("000466"):
+                result.append((mark_val, first_pack))
 
     return result
 
@@ -682,7 +659,8 @@ def extract_import_codes_for_cleaner(df, remove_brackets=False):
         col_has_codes = False
         for val in df.iloc[:, col_idx].dropna():
             v = clean_raw_value(val)
-            if v and len(v) >= 10:
+            # Строгая проверка: коды должны быть минимум 10 символов и не пустыми
+            if v and len(v.strip()) >= 10:
                 col_has_codes = True
                 if remove_brackets:
                     v = remove_specific_brackets(v)
@@ -743,24 +721,23 @@ def process_cleaner_mode(c_folder, out_dir, log_callback, progress_callback, sta
 
         mark_codes = []
         pack_codes = []
-        local_dups = 0
+
+        # Собираем ВСЕ уникальные коды упаковки из колона 8
+        for idx_row in range(len(df)):
+            raw_pack = df.iloc[idx_row, 8] if df.shape[1] > 8 else None
+            if raw_pack is not None and pd.notna(raw_pack):
+                pack_val = safe_str(raw_pack).strip()
+                pack_val = re.sub(r'(?i)код\s+упаковки\s*:\s*', '', pack_val).strip()
+                if pack_val and pack_val.lower() != 'nan' and pack_val not in global_seen_packs:
+                    global_seen_packs.add(pack_val)
+                    pack_codes.append(pack_val)
 
         codes_pairs = extract_trade_codes_for_cleaner(df, remove_brackets)
 
-        for mark_code, pack_code in codes_pairs:
-            # Проверяем дубликаты маркировки - это ГЛАВНЫЙ счетчик
-            if mark_code in global_seen_marks:
-                local_dups += 1
-                total_duplicates_removed += 1
-            else:
+        for mark_code, _ in codes_pairs:
+            if mark_code not in global_seen_marks:
                 global_seen_marks.add(mark_code)
                 mark_codes.append(mark_code)
-
-            # Проверяем дубликаты упаковки - отдельно
-            if pack_code != "БЕЗ_КОДА_УПАКОВКИ":
-                if pack_code not in global_seen_packs:
-                    global_seen_packs.add(pack_code)
-                    pack_codes.append(pack_code)
 
         wb = Workbook()
         ws_mark = wb.active
@@ -784,9 +761,9 @@ def process_cleaner_mode(c_folder, out_dir, log_callback, progress_callback, sta
 
         if not dry_run:
             wb.save(os.path.join(out_dir, out_name))
-            log_callback(f"  ✅ Создан: {out_name} (Маркировок: {len(mark_codes)}, Упаковок: {len(pack_codes)} | Удалено дублей: {local_dups})")
+            log_callback(f"  ✅ Создан: {out_name} (Маркировок: {len(mark_codes)}, Упаковок: {len(pack_codes)})")
         else:
-            log_callback(f"  🔍 Проверка: {out_name} (Маркировок: {len(mark_codes)}, Упаковок: {len(pack_codes)} | Удалено дублей: {local_dups})")
+            log_callback(f"  🔍 Проверка: {out_name} (Маркировок: {len(mark_codes)}, Упаковок: {len(pack_codes)})")
 
         # --- ФАЙЛ ДЛЯ РИММЫ (УРАЛ ТРЕЙД) ---
         wb_rimma = Workbook()
