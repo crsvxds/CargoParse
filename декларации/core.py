@@ -371,6 +371,10 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
         else:
             is_mismatch = (total_codes_count != quantity_int)
 
+        # Проверяем коды
+        codes_match = (total_codes_count == quantity_int)
+        boxes_mismatch = check_boxes and cargo_places_int > 0 and (actual_packages_count != cargo_places_int)
+
         if is_mismatch:
             # Формируем сообщение с расхождением
             mismatch_msg = f"⚠️ Расхождение ({diff_str})"
@@ -384,35 +388,6 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
                 "diff": abs(quantity_int - total_codes_count), "status": "Расхождение", "files": ", ".join(files_loaded_names)
             })
 
-            # КЛИН-кандидаты: коды сходятся, коробки не сходятся, это Трейд
-            if trade_groups and check_boxes and cargo_places_int > 0:
-                codes_match = (total_codes_count == quantity_int)
-                boxes_mismatch = (actual_packages_count != cargo_places_int)
-
-                if codes_match and boxes_mismatch:
-                    # Собираем все коды маркировки и упаковки для этого артикула
-                    all_mark_codes = []
-                    all_pack_codes = []
-
-                    for file_name, p_groups in trade_groups.items():
-                        for pkg_code, codes_list in p_groups.items():
-                            all_mark_codes.extend(codes_list)
-                            if not pkg_code.startswith("БЕЗ_КОДА"):
-                                all_pack_codes.append(pkg_code)
-
-                    klin_candidates.append({
-                        "article": article,
-                        "name": name,
-                        "description": description,
-                        "quantity_plan": quantity_int,
-                        "quantity_fact": total_codes_count,
-                        "boxes_plan": cargo_places_int,
-                        "boxes_fact": actual_packages_count,
-                        "mark_codes": all_mark_codes,
-                        "pack_codes": all_pack_codes,
-                        "unit": unit
-                    })
-
             bad_counter += 1
             stats_callback("bad", bad_counter)
         else:
@@ -420,6 +395,32 @@ def process_customs_data(art_file, c_folder, out_dir, log_callback, progress_cal
             log_callback(f"[{type_label}] ... Артикул {article}: OK ({diff_str})")
             ok_counter += 1
             stats_callback("ok", ok_counter)
+
+        # CLEAN-файл: коды сходятся (даже если коробки расходятся)
+        if codes_match and trade_groups:
+            all_mark_codes = []
+            all_pack_codes = []
+
+            for file_name, p_groups in trade_groups.items():
+                for pkg_code, codes_list in p_groups.items():
+                    all_mark_codes.extend(codes_list)
+                    if not pkg_code.startswith("БЕЗ_КОДА"):
+                        all_pack_codes.append(pkg_code)
+
+            # Добавляем в CLEAN только если коробки расходятся
+            if boxes_mismatch:
+                klin_candidates.append({
+                    "article": article,
+                    "name": name,
+                    "description": description,
+                    "quantity_plan": quantity_int,
+                    "quantity_fact": total_codes_count,
+                    "boxes_plan": cargo_places_int,
+                    "boxes_fact": actual_packages_count,
+                    "mark_codes": all_mark_codes,
+                    "pack_codes": all_pack_codes,
+                    "unit": unit
+                })
 
         # Проверяем, является ли это KLIN-кандидатом (коды сходятся, коробки не сходятся)
         is_klin_candidate = any(k['article'] == article for k in klin_candidates)
